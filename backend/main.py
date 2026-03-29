@@ -108,7 +108,11 @@ async def upload_dataset(
         name=file.filename,
         filename=file.filename,
         file_path=str(file_path),
-        **{k: v for k, v in snap.items()},
+        row_count=snap["row_count"],
+        col_count=snap["col_count"],
+        schema_json=snap["schema_json"],
+        stats_json=snap["stats_json"],
+        sample_json=snap["sample_json"],
     )
     db.add(dataset)
     db.commit()
