@@ -56,8 +56,8 @@ from services.explanation_engine import generate_explanations
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
-UPLOADS_DIR = Path("./uploads")
-UPLOADS_DIR.mkdir(exist_ok=True)
+UPLOADS_DIR = Path("/tmp/uploads")
+UPLOADS_DIR.mkdir(exist_ok=True, parents=True)
 
 
 @asynccontextmanager
