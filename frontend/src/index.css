@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply bg-surface-0 text-gray-100 font-sans;
+    min-height: 100vh;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-surface-1;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-surface-4 rounded-full;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface-1 border border-surface-3 rounded-xl;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-mono font-medium;
+  }
+
+  .badge-critical {
+    @apply badge bg-red-900/40 text-red-400 border border-red-800/50;
+  }
+
+  .badge-warning {
+    @apply badge bg-amber-900/40 text-amber-400 border border-amber-800/50;
+  }
+
+  .badge-info {
+    @apply badge bg-blue-900/40 text-blue-400 border border-blue-800/50;
+  }
+
+  .badge-ok {
+    @apply badge bg-green-900/40 text-green-400 border border-green-800/50;
+  }
+
+  .badge-muted {
+    @apply badge bg-surface-3 text-gray-400 border border-surface-4;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-150 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent hover:bg-accent-hover text-white;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent hover:bg-surface-3 text-gray-300;
+  }
+
+  .btn-danger {
+    @apply btn bg-red-900/30 hover:bg-red-900/50 text-red-400 border border-red-800/40;
+  }
+
+  .input {
+    @apply w-full bg-surface-2 border border-surface-4 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-accent transition-colors;
+  }
+
+  .select {
+    @apply input appearance-none cursor-pointer;
+  }
+
+  .label {
+    @apply block text-xs font-medium text-gray-400 mb-1;
+  }
+
+  .step-pill {
+    @apply flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all border;
+  }
+
+  .step-pill-active {
+    @apply step-pill bg-accent/10 border-accent/40 text-white;
+  }
+
+  .step-pill-default {
+    @apply step-pill bg-surface-2 border-surface-4 text-gray-300 hover:bg-surface-3 hover:border-surface-4;
+  }
+
+  .step-pill-error {
+    @apply step-pill bg-red-900/20 border-red-800/50 text-red-300;
+  }
+
+  .step-pill-warn {
+    @apply step-pill bg-amber-900/20 border-amber-800/50 text-amber-300;
+  }
+}
+
+/* Smooth transition for data table cells */
+.data-cell {
+  @apply px-3 py-1.5 text-sm font-mono whitespace-nowrap text-gray-300;
+}
+
+.data-null {
+  @apply text-gray-600 italic;
+}
