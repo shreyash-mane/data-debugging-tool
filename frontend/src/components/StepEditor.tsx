@@ -59,7 +59,7 @@ export default function StepEditor({
 
   const handleSave = () => {
     onSave({
-      name: name || STEP_TYPES.find(s => s.value === stepType)?.label ?? stepType,
+      name: name || (STEP_TYPES.find(s => s.value === stepType)?.label ?? stepType),
       step_type: stepType,
       config_json: JSON.stringify(config),
       order: step?.order ?? nextOrder,
