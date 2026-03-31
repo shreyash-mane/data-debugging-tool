@@ -4,10 +4,13 @@ auto_cleaner.py — Intelligent automatic data cleaning engine.
 Handles:
   - Column type detection (numeric, categorical, datetime, text)
   - Symbol/currency stripping and safe numeric conversion
-  - Mixed datetime format normalization
+  - Mixed datetime format normalization → always outputs YYYY-MM-DD strings
   - Whitespace trimming for text/categorical
-  - Missing value imputation (skewness-based for numeric, mode/Unknown for categorical,
-    median date for datetime)
+  - Missing value imputation:
+      Numeric: skewness-based (mean vs median); drops only if >40% missing AND unimportant
+      Categorical: mode for low-cardinality, 'Unknown' for high or high-missing
+      Datetime: median date
+  - Column importance detection: important columns are NEVER dropped — filled as NaN/Unknown
   - Issue detection (nulls, duplicates, negative values, invalid emails, mixed types)
   - Per-column explanations with full reasoning chain
 
@@ -26,7 +29,7 @@ from typing import Any
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-MISSING_DROP_THRESHOLD = 0.40    # drop numeric column if > 40% missing
+MISSING_DROP_THRESHOLD = 0.40    # drop numeric column if > 40% missing AND unimportant
 SKEW_MEAN_THRESHOLD = 0.5        # |skew| < 0.5 → mean; else → median
 HIGH_UNIQUE_RATIO = 0.5          # unique/non-null > 0.5 → high cardinality
 HIGH_MISSING_CATEGORICAL = 0.40  # > 40% missing in categorical → fill "Unknown"
@@ -40,6 +43,50 @@ POSITIVE_COLUMN_KEYWORDS = [
     "amount", "score", "rate", "revenue", "profit", "weight",
     "height", "distance", "size",
 ]
+
+# Keywords that signal a column is semantically important (keep even if >40% missing)
+IMPORTANT_COLUMN_KEYWORDS = [
+    # identifiers
+    "id", "_id", "key", "pk", "uid", "uuid", "ref", "code", "number",
+    # names
+    "name", "firstname", "first_name", "lastname", "last_name", "fullname",
+    "full_name", "title",
+    # contact
+    "email", "phone", "mobile", "tel", "contact",
+    # temporal
+    "date", "time", "dob", "birth", "created", "updated", "timestamp", "year",
+    # location
+    "address", "city", "state", "country", "zip", "postal", "region",
+    # demographics
+    "age", "gender", "sex",
+    # business
+    "order", "invoice", "account", "customer", "employee", "user",
+]
+
+
+# ── Column importance scoring ──────────────────────────────────────────────────
+
+def _is_important_column(col_name: str, series: pd.Series) -> tuple[bool, str]:
+    """
+    Decide whether a column is semantically important enough to preserve
+    instead of dropping when it exceeds the missing threshold.
+
+    Returns (is_important, reason_string).
+    """
+    name_lower = col_name.lower().replace(" ", "_")
+
+    for kw in IMPORTANT_COLUMN_KEYWORDS:
+        if kw in name_lower:
+            return True, f"column name contains '{kw}'"
+
+    # Near-unique values → likely an ID / natural key
+    non_null_count = int(series.notna().sum())
+    if non_null_count >= 10:
+        unique_ratio = series.nunique(dropna=True) / non_null_count
+        if unique_ratio >= 0.9:
+            return True, "near-unique values suggest an identifier column"
+
+    return False, "low semantic importance based on name and content"
 
 
 # ── Column type detection ──────────────────────────────────────────────────────
@@ -99,7 +146,6 @@ def _clean_numeric_series(series: pd.Series) -> tuple[pd.Series, list[str]]:
     str_series = series.astype(str)
     stripped = str_series.str.replace(NUMERIC_SYMBOLS_RE, "", regex=True).str.strip()
 
-    # Count how many values had symbols stripped
     non_null_mask = series.notna()
     n_stripped = int((str_series[non_null_mask] != stripped[non_null_mask]).sum())
     if n_stripped > 0:
@@ -107,7 +153,6 @@ def _clean_numeric_series(series: pd.Series) -> tuple[pd.Series, list[str]]:
 
     converted = pd.to_numeric(stripped, errors="coerce")
 
-    # How many became NaN that weren't before?
     new_nulls = int(converted.isna().sum()) - int(series.isna().sum())
     if new_nulls > 0:
         notes.append(f"{new_nulls} non-numeric value(s) could not be converted → set to NaN")
@@ -116,7 +161,11 @@ def _clean_numeric_series(series: pd.Series) -> tuple[pd.Series, list[str]]:
 
 
 def _clean_datetime_series(series: pd.Series) -> tuple[pd.Series, list[str]]:
-    """Normalise mixed datetime formats; invalid → NaT."""
+    """
+    Normalise mixed datetime formats to datetime64.
+    Actual conversion to 'YYYY-MM-DD' strings is done after imputation
+    in auto_clean_dataframe so median-date logic still works.
+    """
     notes: list[str] = []
 
     if pd.api.types.is_datetime64_any_dtype(series.dtype):
@@ -126,6 +175,8 @@ def _clean_datetime_series(series: pd.Series) -> tuple[pd.Series, list[str]]:
     new_nats = int(converted.isna().sum()) - int(series.isna().sum())
     if new_nats > 0:
         notes.append(f"{new_nats} value(s) could not be parsed as dates → set to NaT")
+    else:
+        notes.append("Date values normalised to consistent internal format")
 
     return converted, notes
 
@@ -154,17 +205,34 @@ def _impute_numeric(
     series: pd.Series, col_name: str
 ) -> tuple[pd.Series, str, str, dict]:
     """
-    Auto-impute a numeric column using skewness heuristic.
-    Returns (imputed_series, method, reason, stats).
-    method can be: "none" | "mean" | "median" | "drop_column"
+    Auto-impute a numeric column.
+
+    Decision logic:
+      - >40% missing AND column is NOT important → "drop_column"
+      - >40% missing AND column IS important    → "keep_as_nan" (preserve as-is)
+      - ≤40% missing: use skewness to choose mean vs median
+
+    Returns (series, method, reason, stats).
+    method: "none" | "mean" | "median" | "drop_column" | "keep_as_nan"
     """
     total = len(series)
     missing = int(series.isna().sum())
     missing_pct = missing / total if total else 0
 
     if missing_pct > MISSING_DROP_THRESHOLD:
+        important, imp_reason = _is_important_column(col_name, series)
+        if important:
+            return series, "keep_as_nan", (
+                f"Missing rate {missing_pct*100:.1f}% exceeds 40%, but column appears "
+                f"important ({imp_reason}) — preserved with NaN values rather than dropped"
+            ), {
+                "missing_count": missing,
+                "missing_pct": round(missing_pct * 100, 2),
+                "kept_important": True,
+            }
         return series, "drop_column", (
-            f"Missing rate {missing_pct*100:.1f}% exceeds 40% threshold — column dropped"
+            f"Missing rate {missing_pct*100:.1f}% exceeds 40% and column does not appear "
+            f"critical — dropped to reduce noise"
         ), {"missing_count": missing, "missing_pct": round(missing_pct * 100, 2)}
 
     if missing == 0:
@@ -193,7 +261,13 @@ def _impute_numeric(
 def _impute_categorical(
     series: pd.Series, col_name: str
 ) -> tuple[pd.Series, str, str, dict]:
-    """Auto-impute a categorical/text column using mode or 'Unknown'."""
+    """
+    Auto-impute a categorical/text column.
+
+    - Low cardinality + low missing → mode
+    - High cardinality OR high missing (>40%) → 'Unknown'
+    - If column is important with high missing → note that 'Unknown' preserves the column
+    """
     total = len(series)
     missing = int(series.isna().sum())
     missing_pct = missing / total if total else 0
@@ -204,12 +278,20 @@ def _impute_categorical(
     unique_count = int(series.nunique(dropna=True))
 
     if missing_pct > HIGH_MISSING_CATEGORICAL or unique_count > LOW_UNIQUE_MAX:
+        important, imp_reason = _is_important_column(col_name, series)
         fill_val = "Unknown"
         method = "constant"
-        reason = (
-            f"High missing rate ({missing_pct*100:.1f}%) or high cardinality "
-            f"({unique_count} unique values) → filled with 'Unknown'"
-        )
+        if important:
+            reason = (
+                f"Column appears important ({imp_reason}); "
+                f"high missing rate ({missing_pct*100:.1f}%) → "
+                f"filled with 'Unknown' to preserve the column"
+            )
+        else:
+            reason = (
+                f"High missing rate ({missing_pct*100:.1f}%) or high cardinality "
+                f"({unique_count} unique values) → filled with 'Unknown'"
+            )
     else:
         mode_vals = series.mode(dropna=True)
         if len(mode_vals) > 0:
@@ -247,7 +329,7 @@ def _impute_datetime(
         }
 
     median_date = non_null.sort_values().iloc[len(non_null) // 2]
-    reason = f"Filled with median date ({str(median_date)[:10]})"
+    reason = f"Filled {missing} missing date(s) with median date ({str(median_date)[:10]})"
     return series.fillna(median_date), "median_date", reason, {
         "missing_count": missing,
         "missing_pct": round(missing / len(series) * 100, 2),
@@ -262,7 +344,6 @@ def _detect_column_issues(series: pd.Series, col_name: str, col_type: str) -> li
     issues: list[dict] = []
     total = len(series)
 
-    # Missing values
     missing = int(series.isna().sum())
     if missing > 0:
         pct = missing / total * 100
@@ -274,7 +355,6 @@ def _detect_column_issues(series: pd.Series, col_name: str, col_type: str) -> li
             "count": missing,
         })
 
-    # Negative values in likely-positive columns
     if col_type == "numeric" and pd.api.types.is_numeric_dtype(series.dtype):
         if any(kw in col_name.lower() for kw in POSITIVE_COLUMN_KEYWORDS):
             neg = int((series < 0).sum())
@@ -286,7 +366,6 @@ def _detect_column_issues(series: pd.Series, col_name: str, col_type: str) -> li
                     "count": neg,
                 })
 
-    # Invalid email format
     if col_type in ("categorical", "text") and any(
         kw in col_name.lower() for kw in ("email", "mail", "e_mail")
     ):
@@ -300,7 +379,6 @@ def _detect_column_issues(series: pd.Series, col_name: str, col_type: str) -> li
                 "count": invalid,
             })
 
-    # Mixed types (object column with partial numeric content)
     if series.dtype == object:
         sample = series.dropna().astype(str).head(200)
         n_total = len(sample)
@@ -360,19 +438,27 @@ def auto_clean_dataframe(
     """
     Automatically clean a DataFrame — no user decisions required.
 
+    Cleaning decisions:
+      Numeric columns:
+        - Strip currency/formatting symbols
+        - >40% missing AND important → keep with NaN
+        - >40% missing AND unimportant → drop
+        - ≤40% missing → impute via mean (symmetric) or median (skewed)
+      Categorical/text columns:
+        - Trim whitespace
+        - Low-cardinality + low-missing → mode
+        - High-cardinality or high-missing → "Unknown"
+      Datetime columns:
+        - Normalise all date formats
+        - Fill missing with median date
+        - Output as "YYYY-MM-DD" strings (consistent format)
+
     config keys:
       - columns: list[str] | None   → columns to process (None = all)
-      - drop_columns_above_threshold: bool  → actually drop >40% null columns (default True)
+      - drop_columns_above_threshold: bool  → drop >40% null columns (default True)
 
     Returns:
       (cleaned_df, report)
-
-    report keys:
-      - columns: list of per-column reports
-      - global_issues: list of dataset-level issues
-      - transformations_applied: flat list of all changes made
-      - columns_dropped: list of column names dropped
-      - summary: {total_columns_processed, columns_dropped, transformations_count}
     """
     config = config or {}
     target_cols = config.get("columns") or list(df.columns)
@@ -444,6 +530,19 @@ def auto_clean_dataframe(
                     "action": "drop_column",
                     "detail": reason,
                 })
+        elif method == "keep_as_nan":
+            # Important column with high missing: keep but do not fill
+            col_rep["imputation"] = {
+                "decision": "KEEP_AS_NAN",
+                "method": "keep_as_nan",
+                "reason": reason,
+                **stats,
+            }
+            transformations.append({
+                "column": col,
+                "action": "keep_as_nan",
+                "detail": reason,
+            })
         elif method not in ("none", "left_missing"):
             df[col] = imputed
             col_rep["imputation"] = {
@@ -467,6 +566,15 @@ def auto_clean_dataframe(
     # ── Drop columns flagged above threshold ──────────────────────────────────
     if cols_to_drop:
         df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
+
+    # ── Normalise all datetime64 columns to 'YYYY-MM-DD' strings ─────────────
+    # This ensures consistent display in sample data, exports, and the UI.
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = pd.Series(
+                [v.strftime('%Y-%m-%d') if pd.notna(v) else None for v in df[col]],
+                index=df.index,
+            )
 
     global_issues = _detect_global_issues(df)
 
@@ -505,26 +613,36 @@ def build_auto_clean_explanations(
         issues = col_rep.get("issues_before_clean", [])
         imputation = col_rep.get("imputation")
 
-        # Determine severity
-        drop = imputation and imputation.get("decision") == "DROP_COLUMN"
-        severity = "warning" if drop else "info"
-        if any(i["severity"] == "critical" for i in issues):
+        decision = imputation.get("decision", "") if imputation else ""
+        drop = decision == "DROP_COLUMN"
+        keep_as_nan = decision == "KEEP_AS_NAN"
+
+        severity = "info"
+        if drop:
+            severity = "warning"
+        elif keep_as_nan:
+            severity = "info"
+        elif any(i["severity"] == "critical" for i in issues):
             severity = "warning"
 
         # Build summary
         if drop:
-            summary = f"Column '{col}' DROPPED — >{int(MISSING_DROP_THRESHOLD*100)}% missing"
+            summary = f"Column '{col}' DROPPED — >{int(MISSING_DROP_THRESHOLD*100)}% missing and not critical"
             likely_cause = imputation.get("reason", "")
-            suggested_fix = "Review source data for this column — consider re-collecting"
-        elif imputation and imputation.get("decision") != "none":
-            m = imputation.get("decision", "")
+            suggested_fix = "Review source data — this column had too many missing values to be useful"
+        elif keep_as_nan:
+            cnt = imputation.get("missing_count", 0)
+            pct = imputation.get("missing_pct", 0)
+            summary = f"Column '{col}' preserved with NaN — {cnt} missing ({pct}%)"
+            likely_cause = imputation.get("reason", "")
+            suggested_fix = "Column kept because it appears important — fill or collect more data"
+        elif imputation and decision not in ("", "NONE"):
+            m = decision
             cnt = imputation.get("missing_count", 0)
             pct = imputation.get("missing_pct", 0)
             fv = imputation.get("fill_value", "")
             summary = f"Column: {col} — {cnt} missing ({pct}%) filled via {m}"
-            likely_cause = (
-                f"[{col_type.upper()}] {imputation.get('reason', '')}"
-            )
+            likely_cause = f"[{col_type.upper()}] {imputation.get('reason', '')}"
             extra = ""
             if "skewness" in imputation:
                 extra = f" | Skewness: {imputation['skewness']}"
@@ -557,7 +675,6 @@ def build_auto_clean_explanations(
             "confidence": "high",
             "recommended_checks": checks,
             "suggested_fix": suggested_fix,
-            # Extra fields for rich rendering
             "detected_type": col_type,
             "cleaning_steps": cleaning_steps,
             "issues_found": issues,

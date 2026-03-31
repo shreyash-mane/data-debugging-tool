@@ -26,6 +26,7 @@ Routes:
   GET    /api/uploads          (list uploaded files — for join step UI)
 """
 
+import io
 import json
 import os
 import shutil
@@ -35,8 +36,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+import pandas as pd
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 import database as db_module
@@ -358,6 +361,74 @@ def get_snapshot(snapshot_id: int, db: Session = Depends(get_db)):
     if not snap:
         raise HTTPException(404, "Snapshot not found.")
     return snap
+
+
+@app.get("/api/runs/{run_id}/download-cleaned")
+def download_cleaned(
+    run_id: int,
+    format: str = Query("csv", pattern="^(csv|excel)$"),
+    db: Session = Depends(get_db),
+):
+    """
+    Re-execute the pipeline for this run and return the fully cleaned dataset
+    as a downloadable CSV or Excel file.
+
+    Query params:
+      format: "csv" (default) | "excel"
+    """
+    run = db.get(PipelineRun, run_id)
+    if not run:
+        raise HTTPException(404, "Run not found.")
+
+    pipeline = db.get(Pipeline, run.pipeline_id)
+    if not pipeline:
+        raise HTTPException(404, "Pipeline not found.")
+
+    dataset = db.get(Dataset, pipeline.dataset_id)
+    if not dataset:
+        raise HTTPException(400, "Dataset not found for this pipeline.")
+
+    # Re-execute all enabled steps to produce the final cleaned DataFrame
+    try:
+        df = csv_service.load_csv(dataset.file_path)
+        steps = sorted([s for s in pipeline.steps if s.enabled], key=lambda s: s.order)
+
+        for step in steps:
+            config = json.loads(step.config_json or "{}")
+            if step.step_type == "auto_clean":
+                df, _ = auto_clean_dataframe(df, config)
+            else:
+                df = execute_step(df, step.step_type, config, str(UPLOADS_DIR))
+
+    except Exception as e:
+        raise HTTPException(500, f"Failed to regenerate cleaned data: {e}")
+
+    # Normalise any remaining datetime64 columns to YYYY-MM-DD strings
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = pd.Series(
+                [v.strftime('%Y-%m-%d') if pd.notna(v) else None for v in df[col]],
+                index=df.index,
+            )
+
+    if format == "excel":
+        buf = io.BytesIO()
+        df.to_excel(buf, index=False, engine="openpyxl")
+        buf.seek(0)
+        filename = f"cleaned_run_{run_id}.xlsx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    else:
+        csv_str = df.to_csv(index=False)
+        filename = f"cleaned_run_{run_id}.csv"
+        return StreamingResponse(
+            io.BytesIO(csv_str.encode("utf-8")),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
 
 @app.post("/api/runs/{run_id}/ai-analyze")

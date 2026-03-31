@@ -2,6 +2,7 @@
 csv_service.py — CSV loading, schema inference, summary statistics.
 """
 
+import datetime
 import json
 import math
 import pandas as pd
@@ -10,7 +11,9 @@ from pathlib import Path
 
 
 def _safe_val(v):
-    """Convert numpy scalars to native Python types safe for JSON."""
+    """Convert numpy scalars / pandas timestamps to native Python types safe for JSON."""
+    if v is None:
+        return None
     if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
         return None
     if isinstance(v, (np.integer,)):
@@ -19,6 +22,14 @@ def _safe_val(v):
         return float(v)
     if isinstance(v, (np.bool_,)):
         return bool(v)
+    # Handle pandas Timestamp and NaT
+    if isinstance(v, pd.Timestamp):
+        return v.strftime('%Y-%m-%d') if not pd.isna(v) else None
+    # Handle stdlib datetime / date
+    if isinstance(v, datetime.datetime):
+        return v.strftime('%Y-%m-%d')
+    if isinstance(v, datetime.date):
+        return v.strftime('%Y-%m-%d')
     return v
 
 
