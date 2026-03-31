@@ -101,15 +101,30 @@ def _fill_missing(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     "mean"/"median" also pre-clean via pd.to_numeric to avoid symbol-related crashes.
     """
     col = config.get("column")
-    method = config.get("method", "value")
+    method = config.get("method", "auto")
     fill_value = config.get("value", "")
 
+    df = df.copy()
+
+    # No column specified → apply auto-fill to ALL columns with missing values
     if not col:
-        raise ValueError("fill_missing requires 'column'.")
+        for c in df.columns:
+            if df[c].isna().sum() == 0:
+                continue
+            numeric_attempt = pd.to_numeric(df[c], errors="coerce")
+            if numeric_attempt.notna().mean() >= 0.5:
+                df[c] = numeric_attempt
+            if pd.api.types.is_numeric_dtype(df[c]):
+                non_null = df[c].dropna()
+                skew = float(non_null.skew()) if len(non_null) >= 3 else 0.0
+                df[c] = df[c].fillna(non_null.mean() if abs(skew) < 0.5 else non_null.median())
+            else:
+                mode_val = df[c].mode(dropna=True)
+                df[c] = df[c].fillna(mode_val[0] if len(mode_val) else "Unknown")
+        return df
+
     if col not in df.columns:
         raise ValueError(f"Column '{col}' not found.")
-
-    df = df.copy()
 
     # Pre-clean to numeric for stat-based methods (fixes '£45000' / 'not_available' errors)
     if method in ("mean", "median", "auto"):
