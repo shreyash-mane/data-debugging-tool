@@ -3,6 +3,11 @@
   "outputDirectory": "frontend/dist",
   "framework": null,
   "rewrites": [
+    { "source": "/auth/(.*)", "destination": "https://dataset-finder-backend-production.up.railway.app/auth/$1" },
+    { "source": "/api/search", "destination": "https://dataset-finder-backend-production.up.railway.app/api/search" },
+    { "source": "/api/rate-limit", "destination": "https://dataset-finder-backend-production.up.railway.app/api/rate-limit" },
+    { "source": "/api/collections(.*)", "destination": "https://dataset-finder-backend-production.up.railway.app/api/collections$1" },
+    { "source": "/api/saved(.*)", "destination": "https://dataset-finder-backend-production.up.railway.app/api/saved$1" },
     { "source": "/api/(.*)", "destination": "https://data-debugging-tool-production.up.railway.app/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
