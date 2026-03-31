@@ -12,10 +12,9 @@ import clsx from 'clsx';
 
 export default function UploadPage() {
   const navigate = useNavigate();
-  const { datasets, setDatasets, setActiveDataset, setActivePipeline } = useAppStore();
+  const { datasets, setDatasets, setActiveDataset, setActivePipeline, activePipeline } = useAppStore();
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [backendDown, setBackendDown] = useState(false);
   const [preview, setPreview] = useState<Dataset | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [newPipelineName, setNewPipelineName] = useState('');
@@ -23,15 +22,7 @@ export default function UploadPage() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    listDatasets()
-      .then(setDatasets)
-      .catch((e: Error) => {
-        if (e.message.includes('Cannot reach') || e.message.includes('Failed to fetch')) {
-          setBackendDown(true);
-        } else {
-          setError(e.message);
-        }
-      });
+    listDatasets().then(setDatasets).catch(console.error);
   }, []);
 
   const handleFile = async (file: File) => {
@@ -131,18 +122,6 @@ export default function UploadPage() {
             <div className="mt-2 flex items-center gap-1.5 text-xs text-red-400">
               <AlertCircle size={12} />
               {error}
-            </div>
-          )}
-
-          {backendDown && (
-            <div className="mt-2 p-2.5 bg-red-900/20 border border-red-800/40 rounded-lg text-xs text-red-300 space-y-1">
-              <div className="flex items-center gap-1.5 font-medium">
-                <AlertCircle size={12} /> Backend not reachable
-              </div>
-              <p className="text-red-400 font-mono text-[10px]">
-                Start it with:<br />
-                cd backend && uvicorn main:app --reload --port 8000
-              </p>
             </div>
           )}
         </div>

@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 echo ""
 echo "╔══════════════════════════════════════╗"
-echo "║       Data Debugging Tool            ║"
+echo "║   Data Debugging + Dataset Finder    ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
 
@@ -28,6 +28,17 @@ cd "$BACKEND"
 "$BACKEND/venv/bin/uvicorn" main:app --reload --port 8000 &
 BACKEND_PID=$!
 
+# ── Dataset Finder Backend ───────────────────────────────────────────────────
+FINDER_BACKEND="$ROOT/dataset-finder-backend"
+
+echo "→ Installing Dataset Finder backend dependencies..."
+cd "$FINDER_BACKEND"
+npm install --silent
+
+echo "→ Starting Dataset Finder backend on http://localhost:3001"
+node server.js &
+FINDER_PID=$!
+
 # ── Frontend ─────────────────────────────────────────────────────────────────
 FRONTEND="$ROOT/frontend"
 
@@ -41,14 +52,14 @@ FRONTEND_PID=$!
 
 # ── Wait / cleanup ────────────────────────────────────────────────────────────
 echo ""
-echo "✓ Both servers started."
-echo "  Frontend : http://localhost:5173"
-echo "  Backend  : http://localhost:8000"
-echo "  API docs : http://localhost:8000/docs"
+echo "✓ All servers started."
+echo "  Frontend        : http://localhost:5173"
+echo "  Data Debugger   : http://localhost:8000 (API docs: /docs)"
+echo "  Dataset Finder  : http://localhost:3001"
 echo ""
-echo "Press Ctrl+C to stop both servers."
+echo "Press Ctrl+C to stop all servers."
 echo ""
 
-trap "echo ''; echo 'Stopping...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit 0" INT TERM
+trap "echo ''; echo 'Stopping...'; kill $BACKEND_PID $FINDER_PID $FRONTEND_PID 2>/dev/null; exit 0" INT TERM
 
-wait $BACKEND_PID $FRONTEND_PID
+wait $BACKEND_PID $FINDER_PID $FRONTEND_PID

@@ -13,10 +13,14 @@ from scipy import stats as scipy_stats
 def _safe(v):
     if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
         return None
-    if isinstance(v, (np.integer,)):
+    if isinstance(v, np.bool_):
+        return bool(v)
+    if isinstance(v, np.integer):
         return int(v)
-    if isinstance(v, (np.floating,)):
+    if isinstance(v, np.floating):
         return float(v)
+    if isinstance(v, np.ndarray):
+        return v.tolist()
     return v
 
 

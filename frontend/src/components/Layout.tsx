@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { Bug, Database, GitBranch, ChevronRight } from 'lucide-react';
+import { Bug, Database, GitBranch, ChevronRight, Search } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import clsx from 'clsx';
 
@@ -66,8 +66,17 @@ export default function Layout() {
           )}
         </nav>
 
+        {/* Dataset Finder link */}
+        <NavLink
+          to="/dataset-finder"
+          className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono text-gray-400 hover:text-white hover:bg-surface-2 transition-colors border border-transparent hover:border-surface-3"
+        >
+          <Search size={12} />
+          <span>Dataset Finder</span>
+        </NavLink>
+
         {/* Status indicators */}
-        <div className="ml-auto flex items-center gap-3">
+        <div className="flex items-center gap-3">
           {activeDataset && (
             <div className="flex items-center gap-1.5 text-xs text-gray-500">
               <Database size={12} />

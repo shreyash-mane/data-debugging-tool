@@ -3,6 +3,7 @@ import Layout from './components/Layout';
 import UploadPage from './components/UploadPage';
 import PipelineBuilder from './components/PipelineBuilder';
 import DebuggerPage from './components/DebuggerPage';
+import DatasetFinderPage from './pages/DatasetFinderPage';
 
 export default function App() {
   return (
@@ -14,6 +15,10 @@ export default function App() {
           <Route path="/pipeline/:pipelineId" element={<PipelineBuilder />} />
           <Route path="/debug/:pipelineId/:runId" element={<DebuggerPage />} />
         </Route>
+        {/* Dataset Finder — renders with its own full-page UI */}
+        <Route path="/dataset-finder" element={<DatasetFinderPage />} />
+        {/* OAuth callback route for Dataset Finder social login */}
+        <Route path="/auth/callback" element={<DatasetFinderPage />} />
       </Routes>
     </BrowserRouter>
   );

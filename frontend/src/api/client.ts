@@ -15,43 +15,16 @@ async function req<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`${BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json', ...options.headers },
-      ...options,
-    });
-  } catch (networkErr) {
-    throw new Error(
-      'Cannot reach the backend. Make sure the FastAPI server is running on port 8000.\n' +
-      'Run: cd backend && uvicorn main:app --reload --port 8000'
-    );
-  }
-
-  // Try to parse as JSON regardless of status, fall back to text
-  const contentType = res.headers.get('content-type') ?? '';
-  const isJson = contentType.includes('application/json');
-
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...options.headers },
+    ...options,
+  });
   if (!res.ok) {
-    if (isJson) {
-      const body = await res.json();
-      throw new Error(body.detail ?? JSON.stringify(body));
-    } else {
-      const text = await res.text();
-      // Truncate raw HTML error pages to something readable
-      const clean = text.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 200);
-      throw new Error(`Server error ${res.status}: ${clean || res.statusText}`);
-    }
+    const body = await res.text();
+    let detail = body;
+    try { detail = JSON.parse(body).detail ?? body; } catch { /* ignore */ }
+    throw new Error(detail);
   }
-
-  if (!isJson) {
-    // Endpoint returned non-JSON on success (shouldn't happen, but guard anyway)
-    const text = await res.text();
-    try { return JSON.parse(text) as T; } catch {
-      throw new Error(`Expected JSON from ${path} but got: ${text.slice(0, 100)}`);
-    }
-  }
-
   return res.json() as Promise<T>;
 }
 
@@ -60,20 +33,13 @@ async function req<T>(
 export async function uploadDataset(file: File): Promise<Dataset> {
   const form = new FormData();
   form.append('file', file);
-  let res: Response;
-  try {
-    res = await fetch(`${BASE}/datasets/upload`, { method: 'POST', body: form });
-  } catch {
-    throw new Error('Cannot reach the backend. Make sure the FastAPI server is running on port 8000.');
-  }
+  const res = await fetch(`${BASE}/datasets/upload`, {
+    method: 'POST',
+    body: form,
+  });
   if (!res.ok) {
-    const contentType = res.headers.get('content-type') ?? '';
-    if (contentType.includes('application/json')) {
-      const body = await res.json();
-      throw new Error(body.detail ?? JSON.stringify(body));
-    }
-    const text = await res.text();
-    throw new Error(`Upload failed (${res.status}): ${text.replace(/<[^>]+>/g, '').trim().slice(0, 200)}`);
+    const body = await res.json();
+    throw new Error(body.detail ?? 'Upload failed');
   }
   return res.json();
 }

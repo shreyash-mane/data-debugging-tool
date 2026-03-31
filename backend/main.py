@@ -56,8 +56,8 @@ from services.explanation_engine import generate_explanations
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
-UPLOADS_DIR = Path("/tmp/uploads")
-UPLOADS_DIR.mkdir(exist_ok=True, parents=True)
+UPLOADS_DIR = Path("./uploads")
+UPLOADS_DIR.mkdir(exist_ok=True)
 
 
 @asynccontextmanager
@@ -73,8 +73,8 @@ app = FastAPI(title="Data Debugging Tool API", version="1.0.0", lifespan=lifespa
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -108,11 +108,7 @@ async def upload_dataset(
         name=file.filename,
         filename=file.filename,
         file_path=str(file_path),
-        row_count=snap["row_count"],
-        col_count=snap["col_count"],
-        schema_json=snap["schema_json"],
-        stats_json=snap["stats_json"],
-        sample_json=snap["sample_json"],
+        **{k: v for k, v in snap.items()},
     )
     db.add(dataset)
     db.commit()

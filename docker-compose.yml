@@ -15,6 +15,22 @@ services:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
 
+  dataset-finder-backend:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - ./dataset-finder-backend:/app
+    command: sh -c "npm install && node server.js"
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - MONGODB_URI=${MONGODB_URI}
+      - JWT_SECRET=${JWT_SECRET:-dataset-finder-secret-2026}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
@@ -23,6 +39,7 @@ services:
       - "3000:80"
     depends_on:
       - backend
+      - dataset-finder-backend
     restart: unless-stopped
 
 volumes:
