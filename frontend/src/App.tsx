@@ -3,6 +3,7 @@ import Layout from './components/Layout';
 import UploadPage from './components/UploadPage';
 import PipelineBuilder from './components/PipelineBuilder';
 import DebuggerPage from './components/DebuggerPage';
+// @ts-ignore — DatasetFinderPage is a .jsx file without TS declarations
 import DatasetFinderPage from './pages/DatasetFinderPage';
 
 export default function App() {
