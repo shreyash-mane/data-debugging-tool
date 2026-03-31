@@ -31,6 +31,7 @@ export interface PipelineStep {
 }
 
 export type StepType =
+  | 'auto_clean'
   | 'drop_missing'
   | 'fill_missing'
   | 'rename_column'
@@ -123,6 +124,24 @@ export interface Anomaly {
 
 // ── Explanation ───────────────────────────────────────────────────────────────
 
+export interface AutoCleanImputation {
+  decision: string;
+  method: string;
+  reason: string;
+  missing_count?: number;
+  missing_pct?: number;
+  skewness?: number;
+  fill_value?: number | string;
+  unique_count?: number;
+}
+
+export interface AutoCleanIssue {
+  type: string;
+  severity: 'critical' | 'warning' | 'info';
+  message: string;
+  count: number;
+}
+
 export interface Explanation {
   anomaly_type: string;
   severity: 'critical' | 'warning' | 'info';
@@ -133,6 +152,11 @@ export interface Explanation {
   confidence: 'high' | 'medium' | 'low';
   recommended_checks: string[];
   suggested_fix: string;
+  // Auto-clean enrichment (only present when anomaly_type === 'auto_clean')
+  detected_type?: string;
+  cleaning_steps?: string[];
+  issues_found?: AutoCleanIssue[];
+  imputation?: AutoCleanImputation;
 }
 
 // ── Parsed schema/stats ────────────────────────────────────────────────────────

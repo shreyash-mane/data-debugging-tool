@@ -53,6 +53,7 @@ from services.execution_engine import execute_step
 from services.diff_engine import compute_diff
 from services.anomaly_detector import detect_anomalies
 from services.explanation_engine import generate_explanations
+from services.auto_cleaner import auto_clean_dataframe, build_auto_clean_explanations
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -277,20 +278,20 @@ def run_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
         for idx, step in enumerate(steps, start=1):
             config = json.loads(step.config_json or "{}")
 
-            # Execute the step
-            result_df = execute_step(df, step.step_type, config, str(UPLOADS_DIR))
-
-            # Build snapshot data
-            snap_data = csv_service.build_snapshot_data(result_df)
-
-            # Compute diff against previous step
-            diff = compute_diff(prev_df, result_df)
-
-            # Detect anomalies
-            anomalies = detect_anomalies(diff, step.name, len(prev_df))
-
-            # Generate explanations
-            explanations = generate_explanations(anomalies, diff, step.step_type, step.name)
+            if step.step_type == "auto_clean":
+                # Auto-clean: capture the decision report for rich explanations
+                result_df, auto_report = auto_clean_dataframe(df, config)
+                snap_data = csv_service.build_snapshot_data(result_df)
+                diff = compute_diff(prev_df, result_df)
+                anomalies = detect_anomalies(diff, step.name, len(prev_df))
+                explanations = build_auto_clean_explanations(auto_report, anomalies, diff)
+            else:
+                # Standard step execution
+                result_df = execute_step(df, step.step_type, config, str(UPLOADS_DIR))
+                snap_data = csv_service.build_snapshot_data(result_df)
+                diff = compute_diff(prev_df, result_df)
+                anomalies = detect_anomalies(diff, step.name, len(prev_df))
+                explanations = generate_explanations(anomalies, diff, step.step_type, step.name)
 
             snap = StepSnapshot(
                 run_id=run.id,

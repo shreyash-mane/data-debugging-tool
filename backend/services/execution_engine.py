@@ -21,6 +21,7 @@ import numpy as np
 # ── Step dispatcher ────────────────────────────────────────────────────────────
 
 SUPPORTED_STEPS = {
+    "auto_clean",
     "drop_missing",
     "fill_missing",
     "rename_column",
@@ -42,6 +43,7 @@ def execute_step(df: pd.DataFrame, step_type: str, config: dict, uploads_dir: st
     Raises ValueError for invalid config or unsupported step type.
     """
     handlers = {
+        "auto_clean": _auto_clean,
         "drop_missing": _drop_missing,
         "fill_missing": _fill_missing,
         "rename_column": _rename_column,
@@ -91,8 +93,12 @@ def _fill_missing(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
     config keys:
       - column: str           → column to fill
-      - method: "value" | "mean" | "median" | "mode" | "ffill" | "bfill"
+      - method: "auto" | "value" | "mean" | "median" | "mode" | "ffill" | "bfill"
       - value: any            → used when method == "value"
+
+    "auto" mode: pre-cleans column to numeric, then picks mean (|skew| < 0.5) or
+    median; falls back to mode for non-numeric columns.
+    "mean"/"median" also pre-clean via pd.to_numeric to avoid symbol-related crashes.
     """
     col = config.get("column")
     method = config.get("method", "value")
@@ -104,12 +110,30 @@ def _fill_missing(df: pd.DataFrame, config: dict) -> pd.DataFrame:
         raise ValueError(f"Column '{col}' not found.")
 
     df = df.copy()
-    if method == "mean":
+
+    # Pre-clean to numeric for stat-based methods (fixes '£45000' / 'not_available' errors)
+    if method in ("mean", "median", "auto"):
+        numeric_attempt = pd.to_numeric(df[col], errors="coerce")
+        if numeric_attempt.notna().mean() >= 0.5:
+            df[col] = numeric_attempt
+
+    if method == "auto":
+        if pd.api.types.is_numeric_dtype(df[col]):
+            non_null = df[col].dropna()
+            skew = float(non_null.skew()) if len(non_null) >= 3 else 0.0
+            if abs(skew) < 0.5:
+                df[col] = df[col].fillna(non_null.mean())
+            else:
+                df[col] = df[col].fillna(non_null.median())
+        else:
+            mode_val = df[col].mode(dropna=True)
+            df[col] = df[col].fillna(mode_val[0] if len(mode_val) else "Unknown")
+    elif method == "mean":
         df[col] = df[col].fillna(df[col].mean())
     elif method == "median":
         df[col] = df[col].fillna(df[col].median())
     elif method == "mode":
-        mode_val = df[col].mode()
+        mode_val = df[col].mode(dropna=True)
         df[col] = df[col].fillna(mode_val[0] if len(mode_val) else None)
     elif method == "ffill":
         df[col] = df[col].ffill()
@@ -335,6 +359,26 @@ def _join(df: pd.DataFrame, config: dict, uploads_dir: str) -> pd.DataFrame:
     return df.merge(right_df, on=on, how=how).reset_index(drop=True)
 
 
+def _auto_clean(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """
+    Intelligent auto-clean step — no user decisions required.
+
+    config keys (all optional):
+      - columns: list[str] | None  → columns to process (None = all)
+      - drop_columns_above_threshold: bool  → drop cols >40% missing (default True)
+
+    Automatically:
+      1. Detects column types (numeric / categorical / datetime / text)
+      2. Strips currency/formatting symbols, normalises dates, trims whitespace
+      3. Fills missing values using skewness-based logic for numeric columns,
+         mode/Unknown for categorical, median date for datetime
+      4. Drops numeric columns that are >40% missing (configurable)
+    """
+    from services.auto_cleaner import auto_clean_dataframe
+    cleaned_df, _ = auto_clean_dataframe(df, config)
+    return cleaned_df
+
+
 def _group_aggregate(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
     config keys:
@@ -352,5 +396,13 @@ def _group_aggregate(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     missing = [c for c in group_by if c not in df.columns]
     if missing:
         raise ValueError(f"Group-by columns not found: {missing}")
+
+    df = df.copy()
+    # Pre-clean numeric aggregation targets to avoid symbol-related crashes
+    numeric_aggs = {"sum", "mean", "min", "max", "std", "var"}
+    for agg_col, agg_fn in aggregations.items():
+        if agg_fn in numeric_aggs and agg_col in df.columns:
+            if not pd.api.types.is_numeric_dtype(df[agg_col]):
+                df[agg_col] = pd.to_numeric(df[agg_col], errors="coerce")
 
     return df.groupby(group_by, as_index=False).agg(aggregations).reset_index(drop=True)

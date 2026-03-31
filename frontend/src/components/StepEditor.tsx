@@ -5,7 +5,8 @@ import { useState, useEffect } from 'react';
 import type { PipelineStep, StepType } from '../types';
 import clsx from 'clsx';
 
-const STEP_TYPES: { value: StepType; label: string; description: string }[] = [
+const STEP_TYPES: { value: StepType; label: string; description: string; recommended?: boolean }[] = [
+  { value: 'auto_clean', label: 'Auto Clean', description: 'Intelligent: detect types, strip symbols, fill missing (skewness-based)', recommended: true },
   { value: 'drop_missing', label: 'Drop Missing', description: 'Remove rows with null values' },
   { value: 'fill_missing', label: 'Fill Missing', description: 'Replace nulls with a value or statistic' },
   { value: 'rename_column', label: 'Rename Column', description: 'Rename one or more columns' },
@@ -92,10 +93,19 @@ export default function StepEditor({
                 'text-left px-3 py-2 rounded-lg border text-xs transition-all',
                 stepType === t.value
                   ? 'bg-accent/15 border-accent/50 text-white'
+                  : t.recommended
+                  ? 'bg-ok/5 border-ok/30 text-gray-300 hover:border-ok/50 hover:text-white'
                   : 'bg-surface-2 border-surface-4 text-gray-400 hover:border-surface-4 hover:text-gray-200'
               )}
             >
-              <div className="font-medium">{t.label}</div>
+              <div className="font-medium flex items-center gap-1">
+                {t.label}
+                {t.recommended && (
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-ok/20 text-ok font-semibold tracking-wide">
+                    AUTO
+                  </span>
+                )}
+              </div>
               <div className="text-[10px] text-gray-500 mt-0.5">{t.description}</div>
             </button>
           ))}
@@ -179,6 +189,40 @@ function ConfigFields({ stepType, config, setField, columns, uploadedFiles }: {
   columns: string[]; uploadedFiles: string[];
 }) {
   switch (stepType) {
+    case 'auto_clean':
+      return (
+        <div className="space-y-3">
+          <div className="p-3 bg-ok/5 border border-ok/25 rounded-lg space-y-1.5">
+            <p className="text-xs font-semibold text-ok">Intelligent Auto-Clean — zero config required</p>
+            <ul className="text-[11px] text-gray-400 space-y-0.5 list-none">
+              <li>• Detects column types automatically (numeric / categorical / datetime / text)</li>
+              <li>• Strips currency symbols (£ $ €) and commas from numeric columns</li>
+              <li>• Normalises mixed datetime formats; invalid dates → NaT</li>
+              <li>• Fills missing values: mean (symmetric) or median (skewed) for numeric; mode or "Unknown" for categorical</li>
+              <li>• Drops columns with &gt;40% missing (configurable below)</li>
+            </ul>
+          </div>
+          <ColSelect
+            label="Columns to clean (leave empty = ALL columns)"
+            value={config.columns}
+            onChange={(v) => setField('columns', v)}
+            columns={columns}
+            multi
+          />
+          <div>
+            <label className="label">Drop columns with &gt;40% missing?</label>
+            <select
+              className="select"
+              value={String(config.drop_columns_above_threshold ?? 'true')}
+              onChange={(e) => setField('drop_columns_above_threshold', e.target.value === 'true')}
+            >
+              <option value="true">Yes — drop them (recommended)</option>
+              <option value="false">No — keep them (fill with Unknown/NaN)</option>
+            </select>
+          </div>
+        </div>
+      );
+
     case 'drop_missing':
       return (
         <div className="space-y-3">
@@ -199,20 +243,26 @@ function ConfigFields({ stepType, config, setField, columns, uploadedFiles }: {
           <ColSelect label="Column *" value={config.column} onChange={(v) => setField('column', v)} columns={columns} />
           <div>
             <label className="label">Fill Method</label>
-            <select className="select" value={config.method ?? 'value'} onChange={(e) => setField('method', e.target.value)}>
+            <select className="select" value={config.method ?? 'auto'} onChange={(e) => setField('method', e.target.value)}>
+              <option value="auto">Auto (skewness-based mean or median)</option>
               <option value="value">Constant value</option>
               <option value="mean">Mean</option>
               <option value="median">Median</option>
-              <option value="mode">Mode</option>
+              <option value="mode">Mode (most frequent)</option>
               <option value="ffill">Forward fill</option>
               <option value="bfill">Backward fill</option>
             </select>
           </div>
-          {(!config.method || config.method === 'value') && (
+          {config.method === 'value' && (
             <div>
               <label className="label">Fill Value</label>
               <input className="input" placeholder="e.g. 0 or Unknown" value={config.value ?? ''} onChange={(e) => setField('value', e.target.value)} />
             </div>
+          )}
+          {(!config.method || config.method === 'auto') && (
+            <p className="text-[10px] text-ok/80 bg-ok/5 border border-ok/20 rounded px-2 py-1.5">
+              AUTO: numeric columns use mean (|skew| &lt; 0.5) or median; categorical uses mode or "Unknown"
+            </p>
           )}
         </div>
       );

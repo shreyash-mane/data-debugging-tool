@@ -16,6 +16,7 @@ import StepEditor from './StepEditor';
 import clsx from 'clsx';
 
 const STEP_TYPE_LABEL: Record<string, string> = {
+  auto_clean: 'Auto Clean',
   drop_missing: 'Drop Missing',
   fill_missing: 'Fill Missing',
   rename_column: 'Rename Column',
@@ -325,17 +326,27 @@ export default function PipelineBuilder() {
           <div className="flex flex-col items-center justify-center h-full text-center gap-4">
             {steps.length === 0 ? (
               <>
-                <div className="text-gray-600 text-sm">
-                  <p className="text-lg mb-2">Build your pipeline</p>
+                <div className="text-gray-600 text-sm max-w-sm">
+                  <p className="text-lg mb-2 text-white">Build your pipeline</p>
                   <p>Add transformation steps to clean and reshape your data.</p>
                   <p className="mt-1 text-xs">Then click <strong className="text-white">Run Pipeline</strong> to debug it step by step.</p>
                 </div>
-                <button
-                  className="btn-primary"
-                  onClick={() => { setEditingStep(null); setShowEditor(true); }}
-                >
-                  <Plus size={15} /> Add First Step
-                </button>
+                <div className="p-4 bg-ok/5 border border-ok/25 rounded-xl max-w-sm w-full text-left space-y-2">
+                  <p className="text-xs font-semibold text-ok">Recommended first step</p>
+                  <p className="text-[11px] text-gray-400">
+                    <strong className="text-white">Auto Clean</strong> detects column types, strips symbols,
+                    and fills all missing values automatically — no configuration needed.
+                  </p>
+                  <button
+                    className="btn-primary w-full text-xs"
+                    onClick={() => {
+                      setEditingStep(null);
+                      setShowEditor(true);
+                    }}
+                  >
+                    <Plus size={13} /> Add Auto Clean Step
+                  </button>
+                </div>
               </>
             ) : (
               <div className="text-gray-600 text-sm space-y-2">
