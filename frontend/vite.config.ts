@@ -31,6 +31,13 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('error', (_err, _req, res) => {
+            const serverRes = res as import('http').ServerResponse;
+            serverRes.writeHead(503, { 'Content-Type': 'application/json' });
+            serverRes.end(JSON.stringify({ detail: 'Cannot reach backend. Start it with: uvicorn main:app --reload --port 8000' }));
+          });
+        },
       },
     },
   },
