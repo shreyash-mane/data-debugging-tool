@@ -7,7 +7,6 @@ import type {
   PipelineRun,
   StepSnapshot,
   StepType,
-  AIExplainResponse,
 } from '../types';
 
 const BASE = '/api';
@@ -137,6 +136,3 @@ export const listSnapshots = (run_id: number): Promise<StepSnapshot[]> =>
 
 export const getSnapshot = (snapshot_id: number): Promise<StepSnapshot> =>
   req(`/snapshots/${snapshot_id}`);
-
-export const getAIExplanation = (snapshot_id: number): Promise<AIExplainResponse> =>
-  req(`/snapshots/${snapshot_id}/ai-explain`, { method: 'POST' });

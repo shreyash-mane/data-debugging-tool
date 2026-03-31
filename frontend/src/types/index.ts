@@ -159,25 +159,6 @@ export interface Explanation {
   imputation?: AutoCleanImputation;
 }
 
-// ── AI Explanation ────────────────────────────────────────────────────────────
-
-export interface AIExplanation {
-  issue: string;
-  root_cause: string;
-  severity: 'critical' | 'warning' | 'info';
-  example_values: string[];
-  suggested_step_type: string;
-  suggested_config: Record<string, any>;
-  explanation: string;
-}
-
-export interface AIExplainResponse {
-  snapshot_id: number;
-  step_name: string;
-  explanations: AIExplanation[];
-  model: string;
-}
-
 // ── Parsed schema/stats ────────────────────────────────────────────────────────
 
 export interface ColumnStats {

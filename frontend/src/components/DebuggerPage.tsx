@@ -4,10 +4,10 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   AlertCircle, AlertTriangle, CheckCircle2, Loader2,
-  ChevronLeft, Download, RefreshCw, Sparkles
+  ChevronLeft, Download, RefreshCw, Play
 } from 'lucide-react';
 import {
-  getPipeline, getDataset, getRun, listSnapshots, runPipeline, listSteps
+  getPipeline, getDataset, getRun, listSnapshots, runPipeline
 } from '../api/client';
 import { useAppStore } from '../store/useAppStore';
 import type { StepSnapshot, Anomaly, Explanation, DiffData } from '../types';
@@ -15,11 +15,10 @@ import DataTable from './DataTable';
 import DiffViewer from './DiffViewer';
 import AnomalyCards from './AnomalyCards';
 import ExplanationPanel from './ExplanationPanel';
-import AIFixPanel from './AIFixPanel';
 import { RowCountChart, NullCountChart, RowDeltaChart } from './Charts';
 import clsx from 'clsx';
 
-type RightTab = 'anomalies' | 'explanations' | 'diff' | 'ai-fix';
+type RightTab = 'anomalies' | 'explanations' | 'diff';
 
 export default function DebuggerPage() {
   const { pipelineId, runId } = useParams<{ pipelineId: string; runId: string }>();
@@ -36,7 +35,6 @@ export default function DebuggerPage() {
   const [error, setError] = useState<string | null>(null);
   const [rerunning, setRerunning] = useState(false);
   const [rightTab, setRightTab] = useState<RightTab>('anomalies');
-  const [pipelineStepCount, setPipelineStepCount] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -51,12 +49,8 @@ export default function DebuggerPage() {
         setSnapshots(snaps);
         setActiveStepIndex(0);
 
-        const [dataset, steps] = await Promise.all([
-          getDataset(pipeline.dataset_id),
-          listSteps(pid),
-        ]);
+        const dataset = await getDataset(pipeline.dataset_id);
         setActiveDataset(dataset);
-        setPipelineStepCount(steps.length);
       } catch (e: any) {
         setError(e.message);
       } finally {
@@ -365,31 +359,23 @@ export default function DebuggerPage() {
         </div>
       </div>
 
-      {/* ── RIGHT: Anomalies / Explanations / Diff / AI Fix ─────────── */}
+      {/* ── RIGHT: Anomalies / Explanations / Diff ────────────────────── */}
       <aside className="w-80 flex-shrink-0 border-l border-surface-3 bg-surface-1 flex flex-col">
         {/* Tab bar */}
-        <div className="flex border-b border-surface-3 flex-shrink-0 overflow-x-auto">
-          {(
-            [
-              { id: 'anomalies', label: 'Anomalies' },
-              { id: 'explanations', label: 'Explain' },
-              { id: 'diff', label: 'Diff' },
-              { id: 'ai-fix', label: 'AI Fix', icon: <Sparkles size={10} className="text-accent" /> },
-            ] as { id: RightTab; label: string; icon?: React.ReactNode }[]
-          ).map(({ id, label, icon }) => (
+        <div className="flex border-b border-surface-3 flex-shrink-0">
+          {(['anomalies', 'explanations', 'diff'] as RightTab[]).map((tab) => (
             <button
-              key={id}
-              onClick={() => setRightTab(id)}
+              key={tab}
+              onClick={() => setRightTab(tab)}
               className={clsx(
-                'flex-shrink-0 flex-1 py-2.5 text-xs font-medium transition-colors relative whitespace-nowrap px-1',
-                rightTab === id ? 'text-white' : 'text-gray-500 hover:text-gray-300'
+                'flex-1 py-2.5 text-xs font-medium transition-colors capitalize relative',
+                rightTab === tab
+                  ? 'text-white'
+                  : 'text-gray-500 hover:text-gray-300'
               )}
             >
-              <span className="flex items-center justify-center gap-1">
-                {icon}
-                {label}
-              </span>
-              {id === 'anomalies' && anomalies.length > 0 && (
+              {tab}
+              {tab === 'anomalies' && anomalies.length > 0 && (
                 <span className={clsx(
                   'ml-1 badge text-[9px] px-1',
                   anomalies.some(a => a.severity === 'critical') ? 'badge-critical' : 'badge-warning'
@@ -397,7 +383,7 @@ export default function DebuggerPage() {
                   {anomalies.length}
                 </span>
               )}
-              {rightTab === id && (
+              {rightTab === tab && (
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent" />
               )}
             </button>
@@ -413,13 +399,6 @@ export default function DebuggerPage() {
           )}
           {rightTab === 'diff' && !diff && (
             <p className="text-xs text-gray-600 py-4 text-center">No diff for source step.</p>
-          )}
-          {rightTab === 'ai-fix' && (
-            <AIFixPanel
-              snapshotId={activeSnapshot?.id ?? null}
-              pipelineId={pid}
-              currentStepCount={pipelineStepCount}
-            />
           )}
         </div>
       </aside>
