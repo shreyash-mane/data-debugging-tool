@@ -358,3 +358,70 @@ def get_snapshot(snapshot_id: int, db: Session = Depends(get_db)):
     if not snap:
         raise HTTPException(404, "Snapshot not found.")
     return snap
+
+
+@app.post("/api/runs/{run_id}/ai-analyze")
+async def ai_analyze_run(run_id: int, db: Session = Depends(get_db)):
+    """
+    Call Claude claude-sonnet-4-6 to analyse the source dataset snapshot of a run.
+    Returns per-column AI suggestions with specific pipeline step configs.
+    Requires ANTHROPIC_API_KEY environment variable.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            503,
+            "ANTHROPIC_API_KEY is not configured. "
+            "Add it to Railway environment variables and redeploy."
+        )
+
+    # Get all snapshots for this run
+    snaps = (
+        db.query(StepSnapshot)
+        .filter(StepSnapshot.run_id == run_id)
+        .order_by(StepSnapshot.step_index)
+        .all()
+    )
+    if not snaps:
+        raise HTTPException(404, "No snapshots found for this run.")
+
+    # Use source snapshot (step_index=0) for the base data analysis
+    source = snaps[0]
+
+    try:
+        from services.ai_analyzer import analyze_data_quality
+
+        snapshot_data = {
+            "sample_rows": json.loads(source.sample_json or "[]"),
+            "schema": json.loads(source.schema_json or "{}"),
+            "null_counts": json.loads(source.null_counts_json or "{}"),
+            "stats": json.loads(source.stats_json or "{}"),
+        }
+        # Collect anomalies from all steps to give Claude full context
+        all_anomalies = []
+        for snap in snaps:
+            for a in json.loads(snap.anomalies_json or "[]"):
+                a["_step"] = snap.step_name
+                all_anomalies.append(a)
+
+        diff_data = json.loads(snaps[-1].diff_json or "{}") if len(snaps) > 1 else {}
+
+        suggestions = await analyze_data_quality(
+            snapshot_data=snapshot_data,
+            diff_data=diff_data,
+            anomalies=all_anomalies,
+            api_key=api_key,
+        )
+
+        return {
+            "run_id": run_id,
+            "analyzed_step": source.step_name,
+            "suggestions": suggestions,
+            "model": "claude-sonnet-4-6",
+            "total_suggestions": len(suggestions),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"AI analysis failed: {e}")
