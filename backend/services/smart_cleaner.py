@@ -126,24 +126,6 @@ _DATE_FORMATS = [
 ]
 
 
-def _detect_best_date_format(series: pd.Series) -> str | None:
-    """
-    Determine the format string that parses the most values in a series.
-    Returns the best format string, or None if none works.
-    """
-    sample = series.dropna().astype(str).str.strip().head(100).tolist()
-    if not sample:
-        return None
-
-    best_fmt, best_score = None, 0
-    for fmt in _DATE_FORMATS:
-        score = sum(1 for v in sample if _try_parse(v, fmt))
-        if score > best_score:
-            best_score, best_fmt = score, fmt
-
-    return best_fmt if best_score > 0 else None
-
-
 def _try_parse(v: str, fmt: str) -> bool:
     try:
         _dt.strptime(v.strip(), fmt)
@@ -152,44 +134,49 @@ def _try_parse(v: str, fmt: str) -> bool:
         return False
 
 
+def _parse_single_date(val_str: str) -> str | None:
+    """
+    Try to parse one date string using every known format in order.
+    Returns 'YYYY-MM-DD' string on success, None on failure.
+    Each value is tried against all formats independently — this prevents
+    the "dominant format" problem where minority-format dates stay broken.
+    """
+    val_str = val_str.strip()
+    if not val_str:
+        return None
+    for fmt in _DATE_FORMATS:
+        try:
+            return _dt.strptime(val_str, fmt).strftime('%Y-%m-%d')
+        except (ValueError, TypeError):
+            continue
+    # Last resort: let pandas infer (handles edge cases like '01-Jan-2023')
+    try:
+        return pd.to_datetime(val_str, dayfirst=True).strftime('%Y-%m-%d')
+    except Exception:
+        return None
+
+
 def _standardize_date_series(series: pd.Series) -> tuple[pd.Series, int, str]:
     """
     Normalise a series of mixed-format dates to 'YYYY-MM-DD' strings.
-    Returns (result_series, n_changed, detected_format_description).
+    Each value is parsed individually against all known formats so that
+    columns with mixed formats (e.g. ISO + DD/MM/YYYY + 'Jan 15 2023')
+    are fully corrected rather than only the dominant format being fixed.
+    Returns (result_series, n_changed, format_description).
     """
-    best_fmt = _detect_best_date_format(series)
-
-    # Convert using best detected format, fall back to pandas auto-parse
-    if best_fmt and best_fmt != '%Y-%m-%d':
-        converted = pd.to_datetime(series, format=best_fmt, errors='coerce')
-        # For anything that didn't parse with the detected format, try pandas
-        failed = converted.isna() & series.notna() & (series.astype(str).str.strip() != '')
-        if failed.any():
-            retry = pd.to_datetime(series[failed], infer_datetime_format=True, errors='coerce')
-            converted = converted.copy()
-            converted[failed] = retry
-    else:
-        # Try dayfirst=False first (ISO + US), then dayfirst=True for remaining
-        converted = pd.to_datetime(series, dayfirst=False, errors='coerce')
-        failed = converted.isna() & series.notna() & (series.astype(str).str.strip() != '')
-        if failed.any():
-            retry = pd.to_datetime(series[failed], dayfirst=True, errors='coerce')
-            converted = converted.copy()
-            converted[failed] = retry
-
-    # Format as YYYY-MM-DD strings
-    result = pd.Series(
-        [v.strftime('%Y-%m-%d') if pd.notna(v) else None for v in converted],
-        index=series.index,
-    )
-
-    # Count values that actually changed
     original_str = series.astype(str)
-    n_changed = int(
-        (result.notna() & (result != original_str)).sum()
-    )
-    fmt_desc = best_fmt or 'auto-detected'
-    return result, n_changed, fmt_desc
+    result_vals: list[str | None] = []
+
+    for val in series:
+        if pd.isna(val) or str(val).strip() == '':
+            result_vals.append(None)
+        else:
+            result_vals.append(_parse_single_date(str(val)))
+
+    result = pd.Series(result_vals, index=series.index)
+
+    n_changed = int((result.notna() & (result != original_str)).sum())
+    return result, n_changed, 'per-value multi-format'
 
 
 # ── Step implementations ───────────────────────────────────────────────────────
@@ -378,8 +365,14 @@ def _step7_drop_high_null_cols(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str
 
 
 def _step8_remove_empty_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Remove rows where more than 50% of columns are null."""
-    mask = df.isna().mean(axis=1) > EMPTY_ROW_THRESHOLD
+    """
+    Remove rows where less than 50% of columns have real data
+    (i.e. 50% or more of the columns in that row are null/NaN).
+    Uses >= threshold so a row with exactly 50% nulls is also removed.
+    Runs before null-filling so we don't impute values into rows that
+    should be discarded.
+    """
+    mask = df.isna().mean(axis=1) >= EMPTY_ROW_THRESHOLD
     n = int(mask.sum())
     if n:
         df = df[~mask].reset_index(drop=True)
@@ -430,13 +423,15 @@ def _auto_detect_columns(df: pd.DataFrame) -> dict[str, list[str]]:
             if has_sym > 0.1:
                 currency_cols.append(col)
 
-        # Dates — name hint + content check
+        # Dates — name hint + content check (try both day-first and month-first)
         name_looks_date = any(kw in cl for kw in DATE_KEYWORDS)
         if series.dtype == object and len(non_null) > 0:
             sample = non_null.astype(str).head(30)
-            parsed = pd.to_datetime(sample, errors='coerce', infer_datetime_format=True)
-            parse_rate = parsed.notna().mean()
-            if parse_rate > 0.5 and (name_looks_date or parse_rate > 0.8):
+            # Try dayfirst=False (ISO/US) and dayfirst=True (UK/EU) — take best
+            parsed_mf = pd.to_datetime(sample, errors='coerce', dayfirst=False)
+            parsed_df = pd.to_datetime(sample, errors='coerce', dayfirst=True)
+            parse_rate = max(parsed_mf.notna().mean(), parsed_df.notna().mean())
+            if parse_rate > 0.4 and (name_looks_date or parse_rate > 0.7):
                 date_cols.append(col)
 
     return {
@@ -515,17 +510,19 @@ def smart_clean_dataframe(
     df, s5_log = _step5_remove_impossible(df, age_cols, score_cols, salary_cols)
     log['steps']['5_impossible_values'] = s5_log
 
-    # Step 6: fill remaining nulls
-    df, s6_log = _step6_fill_nulls(df, numeric_hint_cols)
-    log['steps']['6_null_fill'] = s6_log
-
-    # Step 7: drop columns still ≥50% null
-    df, dropped_cols = _step7_drop_high_null_cols(df)
-    log['steps']['7_high_null_cols_dropped'] = dropped_cols
-
-    # Step 8: remove mostly-empty rows
+    # Step 6 (moved): remove rows where <50% of columns have real data
+    # Must run BEFORE null-filling so we don't impute values into rows
+    # that should be discarded entirely.
     df, n_empty_rows = _step8_remove_empty_rows(df)
-    log['steps']['8_empty_rows_removed'] = n_empty_rows
+    log['steps']['6_sparse_rows_removed'] = n_empty_rows
+
+    # Step 7: fill remaining nulls in healthy rows
+    df, s6_log = _step6_fill_nulls(df, numeric_hint_cols)
+    log['steps']['7_null_fill'] = s6_log
+
+    # Step 8: drop columns still ≥50% null
+    df, dropped_cols = _step7_drop_high_null_cols(df)
+    log['steps']['8_high_null_cols_dropped'] = dropped_cols
 
     # Step 9: deduplicate
     df, n_dupes = _step9_remove_duplicates(df)
@@ -540,7 +537,7 @@ def smart_clean_dataframe(
         'cols_dropped':     dropped_cols,
         'nulls_filled':     sum(v.get('filled', 0) for v in s6_log.values() if isinstance(v, dict)),
         'dupes_removed':    n_dupes,
-        'empty_rows_removed': n_empty_rows,
+        'sparse_rows_removed': n_empty_rows,
         'word_nums_converted': sum(s3_log.values()),
         'currency_stripped': sum(
             v.get('symbols_stripped', 0) for v in s2_log.values() if isinstance(v, dict)

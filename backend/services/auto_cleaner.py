@@ -160,9 +160,42 @@ def _clean_numeric_series(series: pd.Series) -> tuple[pd.Series, list[str]]:
     return converted, notes
 
 
+_AUTO_DATE_FORMATS = [
+    '%Y-%m-%d', '%Y/%m/%d',
+    '%d/%m/%Y', '%m/%d/%Y',
+    '%d-%m-%Y', '%m-%d-%Y',
+    '%d-%m-%y', '%m-%d-%y',
+    '%d %b %Y', '%b %d, %Y',
+    '%B %d, %Y', '%d %B %Y',
+]
+
+
+def _parse_single_date_auto(val_str: str):
+    """Try every known format for a single date value. Returns pd.Timestamp or NaT."""
+    val_str = val_str.strip()
+    if not val_str:
+        return pd.NaT
+    for fmt in _AUTO_DATE_FORMATS:
+        try:
+            from datetime import datetime as _dt2
+            return pd.Timestamp(_dt2.strptime(val_str, fmt))
+        except (ValueError, TypeError):
+            continue
+    # fallback: let pandas try both day-first orders
+    for dayfirst in (True, False):
+        try:
+            result = pd.to_datetime(val_str, dayfirst=dayfirst)
+            return result
+        except Exception:
+            continue
+    return pd.NaT
+
+
 def _clean_datetime_series(series: pd.Series) -> tuple[pd.Series, list[str]]:
     """
     Normalise mixed datetime formats to datetime64.
+    Each value is tried against all known formats individually so that columns
+    with mixed formats (e.g. ISO alongside DD/MM/YYYY) are fully corrected.
     Actual conversion to 'YYYY-MM-DD' strings is done after imputation
     in auto_clean_dataframe so median-date logic still works.
     """
@@ -171,7 +204,14 @@ def _clean_datetime_series(series: pd.Series) -> tuple[pd.Series, list[str]]:
     if pd.api.types.is_datetime64_any_dtype(series.dtype):
         return series, notes
 
-    converted = pd.to_datetime(series, dayfirst=False, errors="coerce")
+    converted_vals = []
+    for val in series:
+        if pd.isna(val):
+            converted_vals.append(pd.NaT)
+        else:
+            converted_vals.append(_parse_single_date_auto(str(val)))
+
+    converted = pd.Series(converted_vals, index=series.index, dtype='datetime64[ns]')
     new_nats = int(converted.isna().sum()) - int(series.isna().sum())
     if new_nats > 0:
         notes.append(f"{new_nats} value(s) could not be parsed as dates → set to NaT")
@@ -567,6 +607,18 @@ def auto_clean_dataframe(
     if cols_to_drop:
         df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
 
+    # ── Remove rows where <50% of columns have real data ─────────────────────
+    # Rows with 50% or more nulls after cleaning carry insufficient information.
+    sparse_mask = df.isna().mean(axis=1) >= 0.50
+    n_sparse = int(sparse_mask.sum())
+    if n_sparse:
+        df = df[~sparse_mask].reset_index(drop=True)
+        transformations.append({
+            "column": "__all__",
+            "action": "remove_sparse_rows",
+            "detail": f"Removed {n_sparse} row(s) with <50% data available",
+        })
+
     # ── Normalise all datetime64 columns to 'YYYY-MM-DD' strings ─────────────
     # This ensures consistent display in sample data, exports, and the UI.
     for col in df.columns:
@@ -586,6 +638,7 @@ def auto_clean_dataframe(
         "summary": {
             "total_columns_processed": len(target_cols),
             "columns_dropped": len(cols_to_drop),
+            "sparse_rows_removed": n_sparse,
             "transformations_count": len(transformations),
         },
     }
