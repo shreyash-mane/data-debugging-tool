@@ -28,6 +28,10 @@ Routes:
   POST   /api/datasets/{id}/apply-cleaning     (apply smart_clean config, return before/after + preview)
 
   GET    /api/runs/{run_id}/download-cleaned?format=csv|excel
+
+  POST   /api/clean            (upload CSV/JSON → 9-layer clean pipeline, full audit + quality score)
+  POST   /api/clean/json       (send JSON records → same pipeline, no file upload required)
+  GET    /api/clean/health     (liveness check for the cleaning pipeline)
 """
 
 import io
@@ -41,9 +45,10 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-from fastapi import Body, FastAPI, File, UploadFile, HTTPException, Depends, Query
+from fastapi import Body, FastAPI, File, Form, UploadFile, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 import database as db_module
@@ -55,6 +60,14 @@ from models import (
     StepCreate, StepUpdate, StepOut,
     PipelineRunOut, SnapshotOut, ReorderRequest,
 )
+
+
+# ── Cleaning pipeline config schema ───────────────────────────────────────────
+
+class CleaningConfig(BaseModel):
+    duplicate_keep: str = Field(default="first", pattern="^(first|last|none)$")
+    validation_rules: dict = Field(default_factory=dict)
+    layers: list[str] | None = Field(default=None)
 from services import csv_service, pipeline_service
 from services.execution_engine import execute_step
 from services.diff_engine import compute_diff
@@ -65,6 +78,7 @@ from services.smart_cleaner import (
     smart_clean_dataframe, build_smart_clean_explanations, analyze_dataset_for_cleaning,
 )
 from services.data_profiler import generate_cleaning_report, apply_and_preview
+from services.cleaning.cleaning_pipeline import run_pipeline as run_cleaning_pipeline
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -608,3 +622,111 @@ async def ai_analyze_run(run_id: int, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(500, f"AI analysis failed: {e}")
+
+
+# ── 9-Layer Cleaning Pipeline routes ──────────────────────────────────────────
+
+@app.get("/api/clean/health")
+def clean_health():
+    """Liveness check for the 9-layer cleaning pipeline."""
+    return {"status": "ok", "service": "data-cleaning-pipeline"}
+
+
+@app.post("/api/clean")
+async def clean_file(
+    file: UploadFile = File(..., description="CSV or JSON dataset"),
+    config: str | None = Form(default=None, description="CleaningConfig as JSON string"),
+):
+    """
+    Upload a CSV or JSON file and run the full 9-layer data-quality pipeline.
+
+    Layers: profiling → schema inference → issue detection → normalization →
+            validation → repair (skewness-based imputation) → duplicate handling →
+            audit logging → quality scoring
+
+    Returns detected issues, cleaned preview (50 rows), quality score (0-100),
+    full per-row audit log, and a suggested config for further pipeline steps.
+    """
+    # Load file into DataFrame
+    content = await file.read()
+    filename = file.filename or ""
+    try:
+        if filename.endswith(".json") or filename.endswith(".jsonl"):
+            df = pd.read_json(io.BytesIO(content))
+        else:
+            df = pd.read_csv(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(400, f"Could not parse uploaded file: {e}")
+
+    if df.empty:
+        raise HTTPException(400, "Uploaded file is empty.")
+
+    # Parse optional config
+    cfg = CleaningConfig()
+    if config:
+        try:
+            cfg = CleaningConfig(**json.loads(config))
+        except Exception as e:
+            raise HTTPException(422, f"Invalid config JSON: {e}")
+
+    try:
+        result = run_cleaning_pipeline(
+            df,
+            config={
+                "duplicate_keep": cfg.duplicate_keep,
+                "validation_rules": cfg.validation_rules,
+            },
+            layers=cfg.layers,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Cleaning pipeline failed: {e}")
+
+    return result
+
+
+@app.post("/api/clean/json")
+async def clean_json(payload: dict = Body(...)):
+    """
+    Send raw JSON records to run the full 9-layer cleaning pipeline without uploading a file.
+
+    Request body:
+      {
+        "records": [{"age": "thirty", "salary": "£45,000"}, ...],
+        "config": {
+          "duplicate_keep": "first",
+          "validation_rules": {},
+          "layers": null
+        }
+      }
+
+    Returns the same response as POST /api/clean.
+    Useful for frontend previews — send the records your preview endpoint already returns.
+    """
+    records = payload.get("records")
+    if not records or not isinstance(records, list):
+        raise HTTPException(422, "Payload must include a non-empty 'records' list.")
+
+    try:
+        df = pd.DataFrame(records)
+    except Exception as e:
+        raise HTTPException(400, f"Could not construct DataFrame from records: {e}")
+
+    cfg_raw = payload.get("config", {})
+    try:
+        cfg = CleaningConfig(**(cfg_raw or {}))
+    except Exception as e:
+        raise HTTPException(422, f"Invalid config: {e}")
+
+    try:
+        result = run_cleaning_pipeline(
+            df,
+            config={
+                "duplicate_keep": cfg.duplicate_keep,
+                "validation_rules": cfg.validation_rules,
+            },
+            layers=cfg.layers,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Cleaning pipeline failed: {e}")
+
+    return result
