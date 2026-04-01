@@ -24,7 +24,8 @@ Routes:
   GET    /api/snapshots/{snapshot_id}
 
   GET    /api/uploads          (list uploaded files — for join step UI)
-  GET    /api/datasets/{id}/suggest-cleaning  (auto-detect issues + smart_clean config)
+  GET    /api/datasets/{id}/suggest-cleaning   (full quality report: issues + examples + recommended actions)
+  POST   /api/datasets/{id}/apply-cleaning     (apply smart_clean config, return before/after + preview)
 
   GET    /api/runs/{run_id}/download-cleaned?format=csv|excel
 """
@@ -40,7 +41,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query
+from fastapi import Body, FastAPI, File, UploadFile, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -63,6 +64,7 @@ from services.auto_cleaner import auto_clean_dataframe, build_auto_clean_explana
 from services.smart_cleaner import (
     smart_clean_dataframe, build_smart_clean_explanations, analyze_dataset_for_cleaning,
 )
+from services.data_profiler import generate_cleaning_report, apply_and_preview
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -164,19 +166,32 @@ def list_uploads():
 @app.get("/api/datasets/{dataset_id}/suggest-cleaning")
 def suggest_cleaning(dataset_id: int, db: Session = Depends(get_db)):
     """
-    Analyse a dataset and return a suggested smart_clean config plus a human-
-    readable list of issues found.
+    Profile a dataset and return a full data-quality report with per-issue
+    examples, severity, and recommended actions.
 
     Response:
       {
         "dataset_id": int,
         "dataset_name": str,
-        "row_count": int,
-        "col_count": int,
-        "suggested_config": { age_columns, score_columns, currency_columns,
-                               salary_columns, date_columns },
-        "issues": [ { column, issue_type, detail, count, severity }, … ],
-        "summary": "Found X issues across Y columns. …"
+        "suggested_config": { age_columns, score_columns, … },
+        "column_types":     { id_columns, numeric_columns, … },
+        "issues": [
+          {
+            "column": str | null,
+            "issue_type": str,
+            "detail": str,
+            "examples": [str, …],
+            "count": int,
+            "severity": "critical" | "warning" | "info",
+            "recommended_action": str
+          }, …
+        ],
+        "summary": {
+          "total_rows": int, "total_columns": int,
+          "total_issues": int, "critical": int,
+          "warning": int, "info": int,
+          "columns_with_issues": int, "duplicate_rows": int
+        }
       }
     """
     d = db.get(Dataset, dataset_id)
@@ -188,36 +203,61 @@ def suggest_cleaning(dataset_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(500, f"Failed to load dataset: {e}")
 
-    suggested_config, issues = analyze_dataset_for_cleaning(df)
-
-    # Build human-readable summary
-    n_issues = len(issues)
-    cols_affected = len({i["column"] for i in issues if i["column"]})
-    critical = sum(1 for i in issues if i["severity"] == "critical")
-    warnings = sum(1 for i in issues if i["severity"] == "warning")
-
-    if n_issues == 0:
-        summary = "No data quality issues detected. Dataset looks clean."
-    else:
-        parts = [f"Found {n_issues} issue(s) across {cols_affected} column(s)."]
-        if critical:
-            parts.append(f"{critical} critical (need immediate attention).")
-        if warnings:
-            parts.append(f"{warnings} warnings.")
-        issue_types = list({i["issue_type"] for i in issues})
-        parts.append(f"Issue types: {', '.join(issue_types)}.")
-        parts.append("Use the suggested config below with a smart_clean pipeline step to fix automatically.")
-        summary = " ".join(parts)
+    try:
+        report = generate_cleaning_report(df)
+    except Exception as e:
+        raise HTTPException(500, f"Profiling failed: {e}")
 
     return {
-        "dataset_id": dataset_id,
-        "dataset_name": d.name,
-        "row_count": d.row_count,
-        "col_count": d.col_count,
-        "suggested_config": suggested_config,
-        "issues": issues,
-        "summary": summary,
+        "dataset_id":      dataset_id,
+        "dataset_name":    d.name,
+        "suggested_config": report["suggested_config"],
+        "column_types":    report["column_types"],
+        "issues":          report["issues"],
+        "summary":         report["summary"],
     }
+
+
+@app.post("/api/datasets/{dataset_id}/apply-cleaning")
+def apply_cleaning(
+    dataset_id: int,
+    body: dict = Body(default={}),
+    db: Session = Depends(get_db),
+):
+    """
+    Apply smart_clean with the provided config and return a before/after summary
+    plus a preview of the cleaned data (first 50 rows).
+
+    Request body:
+      { "config": { age_columns: […], score_columns: […], … } }
+
+    Response:
+      {
+        "before":          { rows, cols, total_nulls, duplicate_rows },
+        "after":           { rows, cols, total_nulls, duplicate_rows },
+        "changes":         { … },      # high-level cleaning summary
+        "step_details":    { … },      # per-step counts
+        "columns_dropped": [ … ],
+        "cleaned_preview": [ … ]       # first 50 rows as list of dicts
+      }
+    """
+    d = db.get(Dataset, dataset_id)
+    if not d:
+        raise HTTPException(404, "Dataset not found.")
+
+    try:
+        df = csv_service.load_csv(d.file_path)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to load dataset: {e}")
+
+    config = body.get("config", {}) if isinstance(body, dict) else {}
+
+    try:
+        result = apply_and_preview(df, config)
+    except Exception as e:
+        raise HTTPException(500, f"Cleaning failed: {e}")
+
+    return result
 
 
 # ── Pipeline routes ────────────────────────────────────────────────────────────
