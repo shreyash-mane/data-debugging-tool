@@ -22,6 +22,7 @@ import numpy as np
 
 SUPPORTED_STEPS = {
     "auto_clean",
+    "smart_clean",
     "drop_missing",
     "fill_missing",
     "rename_column",
@@ -44,6 +45,7 @@ def execute_step(df: pd.DataFrame, step_type: str, config: dict, uploads_dir: st
     """
     handlers = {
         "auto_clean": _auto_clean,
+        "smart_clean": _smart_clean,
         "drop_missing": _drop_missing,
         "fill_missing": _fill_missing,
         "rename_column": _rename_column,
@@ -391,6 +393,27 @@ def _auto_clean(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
     from services.auto_cleaner import auto_clean_dataframe
     cleaned_df, _ = auto_clean_dataframe(df, config)
+    return cleaned_df
+
+
+def _smart_clean(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """
+    Deep intelligent cleaning step.  Handles in order:
+      1. null-like strings → NaN
+      2. currency symbol stripping
+      3. English word number conversion ("thirty" → 30)
+      4. type coercion (numeric / datetime)
+      5. impossible value removal (age, score, salary bounds)
+      6. null imputation (median for numeric, mode for categorical)
+      7. drop columns ≥50% null
+      8. remove rows >50% empty
+      9. remove exact duplicates
+
+    config keys (all optional — auto-detected if absent):
+      age_columns, score_columns, currency_columns, salary_columns, date_columns
+    """
+    from services.smart_cleaner import smart_clean_dataframe
+    cleaned_df, _ = smart_clean_dataframe(df, config)
     return cleaned_df
 
 

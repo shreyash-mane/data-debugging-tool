@@ -24,6 +24,9 @@ Routes:
   GET    /api/snapshots/{snapshot_id}
 
   GET    /api/uploads          (list uploaded files — for join step UI)
+  GET    /api/datasets/{id}/suggest-cleaning  (auto-detect issues + smart_clean config)
+
+  GET    /api/runs/{run_id}/download-cleaned?format=csv|excel
 """
 
 import io
@@ -57,6 +60,9 @@ from services.diff_engine import compute_diff
 from services.anomaly_detector import detect_anomalies
 from services.explanation_engine import generate_explanations
 from services.auto_cleaner import auto_clean_dataframe, build_auto_clean_explanations
+from services.smart_cleaner import (
+    smart_clean_dataframe, build_smart_clean_explanations, analyze_dataset_for_cleaning,
+)
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -153,6 +159,65 @@ def list_uploads():
     """Return filenames in the uploads directory — used by join step UI."""
     files = [f.name for f in UPLOADS_DIR.glob("*.csv")]
     return {"files": files}
+
+
+@app.get("/api/datasets/{dataset_id}/suggest-cleaning")
+def suggest_cleaning(dataset_id: int, db: Session = Depends(get_db)):
+    """
+    Analyse a dataset and return a suggested smart_clean config plus a human-
+    readable list of issues found.
+
+    Response:
+      {
+        "dataset_id": int,
+        "dataset_name": str,
+        "row_count": int,
+        "col_count": int,
+        "suggested_config": { age_columns, score_columns, currency_columns,
+                               salary_columns, date_columns },
+        "issues": [ { column, issue_type, detail, count, severity }, … ],
+        "summary": "Found X issues across Y columns. …"
+      }
+    """
+    d = db.get(Dataset, dataset_id)
+    if not d:
+        raise HTTPException(404, "Dataset not found.")
+
+    try:
+        df = csv_service.load_csv(d.file_path)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to load dataset: {e}")
+
+    suggested_config, issues = analyze_dataset_for_cleaning(df)
+
+    # Build human-readable summary
+    n_issues = len(issues)
+    cols_affected = len({i["column"] for i in issues if i["column"]})
+    critical = sum(1 for i in issues if i["severity"] == "critical")
+    warnings = sum(1 for i in issues if i["severity"] == "warning")
+
+    if n_issues == 0:
+        summary = "No data quality issues detected. Dataset looks clean."
+    else:
+        parts = [f"Found {n_issues} issue(s) across {cols_affected} column(s)."]
+        if critical:
+            parts.append(f"{critical} critical (need immediate attention).")
+        if warnings:
+            parts.append(f"{warnings} warnings.")
+        issue_types = list({i["issue_type"] for i in issues})
+        parts.append(f"Issue types: {', '.join(issue_types)}.")
+        parts.append("Use the suggested config below with a smart_clean pipeline step to fix automatically.")
+        summary = " ".join(parts)
+
+    return {
+        "dataset_id": dataset_id,
+        "dataset_name": d.name,
+        "row_count": d.row_count,
+        "col_count": d.col_count,
+        "suggested_config": suggested_config,
+        "issues": issues,
+        "summary": summary,
+    }
 
 
 # ── Pipeline routes ────────────────────────────────────────────────────────────
@@ -288,6 +353,13 @@ def run_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
                 diff = compute_diff(prev_df, result_df)
                 anomalies = detect_anomalies(diff, step.name, len(prev_df))
                 explanations = build_auto_clean_explanations(auto_report, anomalies, diff)
+            elif step.step_type == "smart_clean":
+                # Smart-clean: deep cleaning with detailed per-step log
+                result_df, smart_log = smart_clean_dataframe(df, config)
+                snap_data = csv_service.build_snapshot_data(result_df)
+                diff = compute_diff(prev_df, result_df)
+                anomalies = detect_anomalies(diff, step.name, len(prev_df))
+                explanations = build_smart_clean_explanations(smart_log, anomalies, diff)
             else:
                 # Standard step execution
                 result_df = execute_step(df, step.step_type, config, str(UPLOADS_DIR))
