@@ -104,6 +104,7 @@ class SnapshotOut(BaseModel):
     diff_json: str
     anomalies_json: str
     explanation_json: str
+    intelligence_json: str
     created_at: datetime
 
 

@@ -79,6 +79,7 @@ from services.smart_cleaner import (
 )
 from services.data_profiler import generate_cleaning_report, apply_and_preview
 from services.cleaning.cleaning_pipeline import run_pipeline as run_cleaning_pipeline
+from services.cleaning.step_adapter import enrich_step
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -359,8 +360,9 @@ def run_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
     After each step:
       1. Save a StepSnapshot with statistics.
       2. Compute diff against the previous snapshot.
-      3. Detect anomalies.
-      4. Generate explanations.
+      3. Detect anomalies + generate explanations.
+      4. Run the 9-layer intelligence engine on affected columns
+         and store the result in intelligence_json.
     """
     pipeline = db.get(Pipeline, pipeline_id)
     if not pipeline:
@@ -390,6 +392,7 @@ def run_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
             diff_json="{}",
             anomalies_json="[]",
             explanation_json="[]",
+            intelligence_json="{}",
             **snap_data,
         )
         db.add(source_snap)
@@ -400,27 +403,31 @@ def run_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
         for idx, step in enumerate(steps, start=1):
             config = json.loads(step.config_json or "{}")
 
+            # ── Execute the step (existing logic unchanged) ───────────────────
             if step.step_type == "auto_clean":
-                # Auto-clean: capture the decision report for rich explanations
                 result_df, auto_report = auto_clean_dataframe(df, config)
-                snap_data = csv_service.build_snapshot_data(result_df)
-                diff = compute_diff(prev_df, result_df)
-                anomalies = detect_anomalies(diff, step.name, len(prev_df))
+                snap_data    = csv_service.build_snapshot_data(result_df)
+                diff         = compute_diff(prev_df, result_df)
+                anomalies    = detect_anomalies(diff, step.name, len(prev_df))
                 explanations = build_auto_clean_explanations(auto_report, anomalies, diff)
             elif step.step_type == "smart_clean":
-                # Smart-clean: deep cleaning with detailed per-step log
                 result_df, smart_log = smart_clean_dataframe(df, config)
-                snap_data = csv_service.build_snapshot_data(result_df)
-                diff = compute_diff(prev_df, result_df)
-                anomalies = detect_anomalies(diff, step.name, len(prev_df))
+                snap_data    = csv_service.build_snapshot_data(result_df)
+                diff         = compute_diff(prev_df, result_df)
+                anomalies    = detect_anomalies(diff, step.name, len(prev_df))
                 explanations = build_smart_clean_explanations(smart_log, anomalies, diff)
             else:
-                # Standard step execution
-                result_df = execute_step(df, step.step_type, config, str(UPLOADS_DIR))
-                snap_data = csv_service.build_snapshot_data(result_df)
-                diff = compute_diff(prev_df, result_df)
-                anomalies = detect_anomalies(diff, step.name, len(prev_df))
+                result_df    = execute_step(df, step.step_type, config, str(UPLOADS_DIR))
+                snap_data    = csv_service.build_snapshot_data(result_df)
+                diff         = compute_diff(prev_df, result_df)
+                anomalies    = detect_anomalies(diff, step.name, len(prev_df))
                 explanations = generate_explanations(anomalies, diff, step.step_type, step.name)
+
+            # ── Intelligence enrichment (runs for EVERY step type) ────────────
+            try:
+                intelligence = enrich_step(prev_df, result_df, step.step_type, config)
+            except Exception as ie:
+                intelligence = {"error": str(ie), "layers_run": []}
 
             snap = StepSnapshot(
                 run_id=run.id,
@@ -430,6 +437,7 @@ def run_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
                 diff_json=json.dumps(diff),
                 anomalies_json=json.dumps(anomalies),
                 explanation_json=json.dumps(explanations),
+                intelligence_json=json.dumps(intelligence),
                 **snap_data,
             )
             db.add(snap)

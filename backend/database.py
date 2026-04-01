@@ -6,7 +6,7 @@ Uses SQLAlchemy 2.0 mapped_column style for clarity.
 from datetime import datetime
 from sqlalchemy import (
     create_engine, String, Integer, Float, Text, DateTime,
-    ForeignKey, Boolean
+    ForeignKey, Boolean, text
 )
 from sqlalchemy.orm import (
     DeclarativeBase, Mapped, mapped_column, relationship, Session
@@ -104,6 +104,7 @@ class StepSnapshot(Base):
     diff_json: Mapped[str] = mapped_column(Text, default="{}")        # diff from prev step
     anomalies_json: Mapped[str] = mapped_column(Text, default="[]")   # anomaly list
     explanation_json: Mapped[str] = mapped_column(Text, default="[]") # explanations
+    intelligence_json: Mapped[str] = mapped_column(Text, default="{}") # 9-layer intelligence
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     run: Mapped["PipelineRun"] = relationship("PipelineRun", back_populates="snapshots")
@@ -117,3 +118,12 @@ def get_db():
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
+    # Add intelligence_json column to existing DBs that predate this field
+    with engine.connect() as conn:
+        try:
+            conn.execute(text(
+                "ALTER TABLE step_snapshots ADD COLUMN intelligence_json TEXT DEFAULT '{}'"
+            ))
+            conn.commit()
+        except Exception:
+            pass  # Column already exists — safe to ignore
