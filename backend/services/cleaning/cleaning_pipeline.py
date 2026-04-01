@@ -116,6 +116,13 @@ def run_pipeline(
             errors.append(f"normalization: {e}")
             traceback.print_exc()
 
+    # ── Layer 4.5: Drop empty rows BEFORE repair so we don't impute into them ─
+    if "duplicate_handling" in layers_to_run:
+        try:
+            df_work = _drop_empty_rows_early(df_work, schema, audit_log)
+        except Exception as e:
+            errors.append(f"empty_row_removal: {e}")
+
     # ── Layer 5: Validation ─────────────────────────────────────────────────
     if "validation" in layers_to_run and schema:
         try:
@@ -133,7 +140,7 @@ def run_pipeline(
         except Exception as e:
             errors.append(f"repair: {e}")
 
-    # ── Layer 7: Duplicate Handling ─────────────────────────────────────────
+    # ── Layer 7: Duplicate Handling (dedup only — empty rows already dropped) ─
     if "duplicate_handling" in layers_to_run and schema:
         try:
             dup_config = DuplicateConfig(
@@ -158,6 +165,7 @@ def run_pipeline(
     quality_scores: dict[str, Any] = {}
     if "quality_scoring" in layers_to_run and issues_before is not None:
         try:
+            # Re-detect issues on cleaned data for comparison
             if profile:
                 profile_after = profile_dataframe(df_work)
                 schema_after = infer_schema(df_work, profile_after)
@@ -209,5 +217,45 @@ def run_pipeline(
 def _df_to_preview(df: pd.DataFrame, max_rows: int = 50) -> list[dict]:
     """Convert dataframe head to JSON-serialisable list of dicts."""
     preview = df.head(max_rows).copy()
+    # Replace NaN with None for JSON
     preview = preview.where(pd.notnull(preview), None)
     return preview.to_dict(orient="records")
+
+
+def _drop_empty_rows_early(
+    df: pd.DataFrame,
+    schema: dict[str, Any],
+    audit_log: list[dict],
+) -> pd.DataFrame:
+    """
+    Remove rows where all data columns (non-ID) are null/empty.
+    Called before repair so we never impute into empty rows.
+    """
+    import re as _re
+    check = df.replace(r"^\s*$", pd.NA, regex=True)
+    id_like = [c for c in df.columns if _re.search(r"\bid\b|_id$|^id_", c.lower())]
+    data_cols = [c for c in df.columns if c not in id_like]
+    col_set = data_cols if data_cols else list(df.columns)
+
+    all_null_mask = check[col_set].isnull().all(axis=1)
+    n = int(all_null_mask.sum())
+    if n == 0:
+        return df
+
+    empty_indices = df[all_null_mask].index.tolist()
+    df = df[~all_null_mask].copy()
+
+    audit_log.append({
+        "column": "__all__",
+        "row_index": empty_indices,
+        "action": "drop_empty_rows",
+        "from": f"{n} empty row(s)",
+        "to": "dropped",
+        "detail": (
+            f"Removed {n} row(s) where all data columns were null/empty "
+            f"(original row indices: {empty_indices})."
+        ),
+        "confidence": "high",
+        "layer": "duplicate_handling",
+    })
+    return df

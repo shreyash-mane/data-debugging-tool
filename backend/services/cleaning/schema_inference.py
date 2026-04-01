@@ -27,11 +27,30 @@ def _is_email_column(series: pd.Series) -> bool:
 
 
 def _looks_like_date(series: pd.Series) -> bool:
+    """
+    Returns True if the majority of non-null values in the series
+    look like dates. Tries a set of explicit formats to avoid pandas
+    inference warnings.
+    """
+    _PROBE_FORMATS = [
+        "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y",
+        "%Y/%m/%d", "%d.%m.%Y", "%Y%m%d",
+    ]
     str_vals = series.dropna().astype(str).head(20)
     if len(str_vals) == 0:
         return False
-    parsed = pd.to_datetime(str_vals, errors="coerce")
-    return parsed.notna().sum() / len(str_vals) > 0.5
+
+    parsed_count = 0
+    for val in str_vals:
+        for fmt in _PROBE_FORMATS:
+            try:
+                pd.to_datetime(val, format=fmt)
+                parsed_count += 1
+                break
+            except Exception:
+                continue
+
+    return parsed_count / len(str_vals) > 0.5
 
 
 # ---------------------------------------------------------------------------

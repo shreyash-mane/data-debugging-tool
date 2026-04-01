@@ -59,6 +59,7 @@ def detect_issues(
     issues: list[Issue] = []
 
     # Global (cross-column) checks
+    issues.extend(_detect_empty_rows(df))
     issues.extend(_detect_duplicate_rows(df))
     issues.extend(_detect_duplicate_ids(df, schema))
 
@@ -100,6 +101,29 @@ def _detect_missing_values(col: str, series: pd.Series, profile: dict) -> list[I
         examples=[],
         severity=severity,
         recommended_action="impute with median (numeric) or mode (categorical)",
+        confidence="high",
+    )]
+
+
+def _detect_empty_rows(df: pd.DataFrame) -> list[Issue]:
+    """Detect rows where all data columns (non-ID) are null or empty string."""
+    check = df.replace(r"^\s*$", pd.NA, regex=True)
+    id_like = [c for c in df.columns if re.search(r"\bid\b|_id$|^id_", c.lower())]
+    data_cols = [c for c in df.columns if c not in id_like]
+    col_set = data_cols if data_cols else list(df.columns)
+
+    all_null_mask = check[col_set].isnull().all(axis=1)
+    n = int(all_null_mask.sum())
+    if n == 0:
+        return []
+    empty_indices = df[all_null_mask].index.tolist()
+    return [Issue(
+        column="__all__",
+        issue_type="empty_rows",
+        detail=f"{n} empty row(s) — all data fields are null (row indices: {empty_indices})",
+        examples=empty_indices,
+        severity="critical",
+        recommended_action="drop empty rows — they carry no information",
         confidence="high",
     )]
 

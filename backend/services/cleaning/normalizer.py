@@ -203,7 +203,30 @@ def _convert_word_numbers(
 def _normalise_dates(
     series: pd.Series, col: str, audit_log: list[dict]
 ) -> pd.Series:
-    """Parse dates from any known format and return ISO 8601 strings."""
+    """
+    Normalise date strings to ISO 8601 (YYYY-MM-DD).
+
+    Rules:
+      1. Values that are ALREADY valid YYYY-MM-DD → left completely unchanged.
+         We do NOT re-parse them — this prevents corrupting correct data.
+      2. Values in another recognised unambiguous format → converted and logged.
+      3. Ambiguous formats (e.g. 05/02/2023 could be DD/MM or MM/DD) → left
+         unchanged with a flag; the validator will catch truly invalid dates.
+      4. Unparseable values → left as-is for the validator to null out.
+    """
+    # Unambiguous formats tried in priority order.
+    # %d/%m/%Y is listed before %m/%d/%Y because day-first is more common
+    # internationally, but BOTH are marked ambiguous when day ≤ 12.
+    UNAMBIGUOUS_FORMATS = [
+        "%d-%m-%Y",   # 22-08-2018
+        "%d.%m.%Y",   # 22.08.2018
+        "%Y/%m/%d",   # 2018/08/22
+        "%Y%m%d",     # 20180822
+    ]
+
+    # These two are ambiguous when day ≤ 12 — handle separately
+    SLASH_FORMATS = ["%d/%m/%Y", "%m/%d/%Y"]
+
     result = series.copy()
 
     for idx, val in series.items():
@@ -211,40 +234,102 @@ def _normalise_dates(
             continue
         val_str = str(val).strip()
 
-        # Already looks like YYYY-MM-DD
+        # ── Rule 1: Already YYYY-MM-DD — leave it alone ──────────────────────
         if re.match(r"^\d{4}-\d{2}-\d{2}$", val_str):
-            # Still validate it
-            try:
-                parsed = pd.to_datetime(val_str, format="%Y-%m-%d")
-                result[idx] = parsed.strftime("%Y-%m-%d")
-            except Exception:
-                result[idx] = None  # Validator will flag
+            # Don't touch it. The validator will null it if it's an invalid
+            # calendar date (e.g. 2023-13-01 or 2023-01-40).
             continue
 
-        # Try each known format
+        # ── Rule 2: Try unambiguous formats first ─────────────────────────────
         converted = False
-        for fmt in _DATE_FORMATS:
+        for fmt in UNAMBIGUOUS_FORMATS:
             try:
                 parsed = pd.to_datetime(val_str, format=fmt)
                 new_val = parsed.strftime("%Y-%m-%d")
-                if new_val != val_str:
+                result[idx] = new_val
+                audit_log.append({
+                    "column": col,
+                    "row_index": int(idx),
+                    "action": "normalise_date",
+                    "from": val_str,
+                    "to": new_val,
+                    "format_detected": fmt,
+                    "confidence": "high",
+                    "layer": "normalization",
+                })
+                converted = True
+                break
+            except Exception:
+                continue
+
+        if converted:
+            continue
+
+        # ── Rule 3: Slash-separated — check for ambiguity ────────────────────
+        # A value like 05/02/2023 is ambiguous (day=5,month=2 OR day=2,month=5).
+        # A value like 25/02/2023 is unambiguous (only valid as DD/MM).
+        slash_match = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", val_str)
+        if slash_match:
+            a, b, year = int(slash_match.group(1)), int(slash_match.group(2)), slash_match.group(3)
+            day_first_valid = 1 <= a <= 31 and 1 <= b <= 12
+            month_first_valid = 1 <= a <= 12 and 1 <= b <= 31
+
+            if day_first_valid and month_first_valid and a <= 12:
+                # Genuinely ambiguous — flag it but do NOT change the value.
+                # The detector will surface this as a mixed_date_formats issue.
+                audit_log.append({
+                    "column": col,
+                    "row_index": int(idx),
+                    "action": "date_format_ambiguous",
+                    "from": val_str,
+                    "to": val_str,  # unchanged
+                    "reason": (
+                        f"'{val_str}' could be DD/MM/YYYY or MM/DD/YYYY. "
+                        "Left unchanged — manual review recommended."
+                    ),
+                    "confidence": "low",
+                    "layer": "normalization",
+                })
+            elif day_first_valid:
+                # Only valid as DD/MM/YYYY
+                try:
+                    parsed = pd.to_datetime(val_str, format="%d/%m/%Y")
+                    new_val = parsed.strftime("%Y-%m-%d")
+                    result[idx] = new_val
                     audit_log.append({
                         "column": col,
                         "row_index": int(idx),
                         "action": "normalise_date",
                         "from": val_str,
                         "to": new_val,
+                        "format_detected": "%d/%m/%Y",
                         "confidence": "high",
                         "layer": "normalization",
                     })
-                result[idx] = new_val
-                converted = True
-                break
-            except Exception:
-                continue
+                except Exception:
+                    pass
+            elif month_first_valid:
+                # Only valid as MM/DD/YYYY
+                try:
+                    parsed = pd.to_datetime(val_str, format="%m/%d/%Y")
+                    new_val = parsed.strftime("%Y-%m-%d")
+                    result[idx] = new_val
+                    audit_log.append({
+                        "column": col,
+                        "row_index": int(idx),
+                        "action": "normalise_date",
+                        "from": val_str,
+                        "to": new_val,
+                        "format_detected": "%m/%d/%Y",
+                        "confidence": "high",
+                        "layer": "normalization",
+                    })
+                except Exception:
+                    pass
+            # else: both invalid — validator will null it out
+            continue
 
-        if not converted:
-            # Leave as-is; validator + repair will handle
-            pass
+        # ── Rule 4: Nothing matched — leave for validator ─────────────────────
+        # The validator will null any value that isn't valid YYYY-MM-DD.
 
     return result

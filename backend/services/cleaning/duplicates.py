@@ -10,6 +10,7 @@ Configurable via DuplicateConfig:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -45,6 +46,8 @@ def handle_duplicates(
     )
     df = df.copy()
 
+    # Drop rows where ALL values are null/empty — these are structurally empty rows
+    df = _drop_empty_rows(df, audit_log)
     df = _drop_duplicate_rows(df, config, audit_log)
     df = _handle_duplicate_ids(df, config, audit_log)
 
@@ -54,6 +57,51 @@ def handle_duplicates(
 # ---------------------------------------------------------------------------
 # Implementations
 # ---------------------------------------------------------------------------
+
+def _drop_empty_rows(
+    df: pd.DataFrame,
+    audit_log: list[dict],
+) -> pd.DataFrame:
+    """
+    Drop rows where all meaningful data columns are null/empty.
+
+    A row is considered empty if every column EXCEPT id/index-like columns
+    is null or whitespace-only. An id-only row with no other data is not a
+    real record and should be removed.
+    """
+    check = df.replace(r"^\s*$", pd.NA, regex=True)
+
+    # Identify columns that look like IDs
+    id_like = [c for c in df.columns if re.search(r"\bid\b|_id$|^id_", c.lower())]
+    data_cols = [c for c in df.columns if c not in id_like]
+
+    if not data_cols:
+        all_null_mask = check.isnull().all(axis=1)
+    else:
+        all_null_mask = check[data_cols].isnull().all(axis=1)
+
+    n = int(all_null_mask.sum())
+    if n == 0:
+        return df
+
+    empty_indices = df[all_null_mask].index.tolist()
+    df = df[~all_null_mask].copy()
+
+    audit_log.append({
+        "column": "__all__",
+        "row_index": empty_indices,
+        "action": "drop_empty_rows",
+        "from": f"{n} empty row(s)",
+        "to": "dropped",
+        "detail": (
+            f"Removed {n} row(s) where all data columns were null/empty "
+            f"(row indices: {empty_indices}). ID-only rows carry no information."
+        ),
+        "confidence": "high",
+        "layer": "duplicate_handling",
+    })
+
+    return df
 
 def _drop_duplicate_rows(
     df: pd.DataFrame,
